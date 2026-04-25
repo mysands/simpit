@@ -1,0 +1,115 @@
+# SimPit packaging metadata.
+#
+# Two console scripts are exposed:
+#   simpit-control  -> simpit_control.__main__:main
+#   simpit-slave    -> simpit_slave.__main__:main
+#
+# After `pip install -e .` users can run them directly. The
+# `python -m simpit_control` form also works without entry points,
+# which is useful when running from a checkout without installing.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "simpit"
+version         = "0.1.0"
+description     = "Multi-machine flight simulator cockpit controller"
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { file = "LICENSE" }
+authors         = [{ name = "Sandeep" }]
+keywords        = ["flight-sim", "x-plane", "simpit", "cockpit", "automation"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment :: Simulation",
+    "Topic :: System :: Distributed Computing",
+]
+
+# Runtime dependencies. Kept tiny on purpose:
+#   psutil  - cross-platform process detection
+# Everything else is stdlib (tkinter, socket, hmac, hashlib, json, etc.).
+# Slaves don't need tkinter — but we still list it as a soft requirement
+# only on Control via the [project.optional-dependencies] section.
+dependencies = [
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+# Dev/test deps. `pip install -e .[dev]` to set up a working tree.
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+simpit-control = "simpit_control.__main__:main"
+simpit-slave   = "simpit_slave.__main__:main"
+
+[project.urls]
+Homepage      = "https://github.com/yourname/simpit"
+"Bug Tracker" = "https://github.com/yourname/simpit/issues"
+
+[tool.setuptools.packages.find]
+where    = ["."]
+include  = ["simpit_common*", "simpit_control*", "simpit_slave*"]
+exclude  = ["tests*"]
+
+# ── Test config ──────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `-q` keeps CI logs short; verbose mode opt-in via `pytest -v`.
+addopts   = "-q --strict-markers"
+
+# Markers used in tests. Declared so pytest doesn't warn.
+markers = [
+    "needs_display: tests that require a Tk display (use Xvfb in CI).",
+    "slow: integration tests that may take >1s.",
+]
+
+# ── Lint config ──────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Conservative rule set — readability-first, no auto-fix surprises.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E501",   # long-line: hand-formatted docstrings frequently exceed 100
+    "B008",   # default args call: dataclasses.field(default_factory=...) is fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use compact multi-statement lines (a; b) for setup brevity.
+# Same goes for the few production sites where it makes pairs of
+# closely-related calls more readable.
+"tests/**/*.py" = ["E702"]
+"simpit_slave/executor.py" = ["E702"]   # paired thread.start() calls
+
+# ── Coverage ─────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["simpit_common", "simpit_control", "simpit_slave"]
+omit   = ["*/tests/*", "*/__main__.py"]
+
+[tool.coverage.report]
+# Don't fail builds on coverage thresholds for now; the value is in the
+# report itself, not in arbitrary cutoffs.
+show_missing = true
+skip_empty   = true

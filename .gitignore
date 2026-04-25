@@ -1,0 +1,78 @@
+# ──────────────────────────────────────────────────────────────────────
+# SimPit .gitignore
+#
+# Critical: never commit security keys or per-machine config files.
+# Everything that gets generated at install/run time stays out of git.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Secrets (NEVER commit these) ────────────────────────────────────────
+simpit.key
+*.key
+secret.key
+
+# ── Per-machine state ──────────────────────────────────────────────────
+slaves.json
+batfiles.json
+agent.log
+cascaded/
+local/
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.eggs/
+*.egg-info/
+*.egg
+build/
+dist/
+sdist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Tests / coverage ───────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ── Linting / type checking ────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ── IDE / editor ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS junk ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── PyInstaller ────────────────────────────────────────────────────────
+*.manifest
+*.spec

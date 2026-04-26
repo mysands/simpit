@@ -39,8 +39,14 @@ def _module_app(tmp_path_factory):
         return provider.link_for(slave)
 
     data_dir = tmp_path_factory.mktemp("control")
-    a = App(data_dir, link_factory=factory, link_provider=provider)
+    try:
+        a = App(data_dir, link_factory=factory, link_provider=provider)
+    except Exception as e:
+        if "tcl" in str(e).lower() or "tk" in str(e).lower():
+            pytest.skip(f"tkinter not usable on this runner: {e}")
+        raise
     a.key = b"\x00" * 32
+
     _session_app.append(a)
     yield a, provider, data_dir
     # Stop background work; let process exit clean up Tk.

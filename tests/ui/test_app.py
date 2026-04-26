@@ -3,13 +3,21 @@
 Verifies that every wiring point holds together: data dir, store,
 poller, controller, widgets, dialogs all construct without error and
 dispatch to each other on user actions.
+
+On Linux, set DISPLAY=:99 (or any other X server) to run; tests skip
+cleanly if no display is available. Windows and macOS have native
+display servers and don't use DISPLAY, so the guard is Linux-only.
 """
 import os
+import sys
 import time
 
 import pytest
 
-if not os.environ.get("DISPLAY"):
+# Skip the whole module if we're on Linux without a display. Windows
+# and macOS have native display servers; tkinter works there without
+# DISPLAY being set, so we don't gate them on it.
+if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     pytest.skip("no DISPLAY available", allow_module_level=True)
 
 from simpit_control import mock_slave as sp_mock

@@ -5,18 +5,20 @@ view-model without crashing, that it contains the expected text, and
 that callbacks fire when buttons are clicked. We don't pixel-test the
 rendering — that's a Tk version pain trap.
 
-Set DISPLAY=:99 (or any other Xvfb display) to run; they'll skip
-cleanly if no display is available.
+On Linux, set DISPLAY=:99 (or any other X server) to run; tests skip
+cleanly if no display is available. Windows and macOS have native
+display servers and don't use DISPLAY, so the guard is Linux-only.
 """
 import os
+import sys
 import time
 
 import pytest
 
-# Skip the whole module if there's no display configured. CI runners
-# without Xvfb will skip gracefully; running developers with a real
-# desktop or Xvfb will execute the tests.
-if not os.environ.get("DISPLAY"):
+# Skip the whole module if we're on Linux without a display. Windows
+# and macOS have native display servers; tkinter works there without
+# DISPLAY being set, so we don't gate them on it.
+if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     pytest.skip("no DISPLAY available", allow_module_level=True)
 
 import tkinter as tk

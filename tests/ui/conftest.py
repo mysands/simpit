@@ -57,7 +57,11 @@ def tk_session_root():
             pytest.skip("no DISPLAY available")
 
     import tkinter as tk
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"tkinter not usable on this runner: {e}")
     root.withdraw()
+
     yield root
     # Deliberately no destroy — see module docstring.

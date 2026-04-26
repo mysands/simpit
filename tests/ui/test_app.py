@@ -23,23 +23,58 @@ if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
 from simpit_control import mock_slave as sp_mock
 from simpit_control.ui.app import App
 
+# A single App instance is shared across all tests in this module.
+# tkinter on Python 3.14 + Windows doesn't reliably support multiple
+# Tk constructions per process, so we construct ONE App and reset its
+# store/poller state between tests via the `app` fixture below.
+_session_app: list = []   # holds the App so the session fixture can clean it up
 
-@pytest.fixture
-def app(tmp_path):
-    """Build an App backed by mock slaves; tear it down after the test."""
+
+@pytest.fixture(scope="module")
+def _module_app(tmp_path_factory):
+    """Construct exactly one App for the whole test module."""
     provider = sp_mock.MockLinkProvider()
 
     def factory(slave):
         return provider.link_for(slave)
 
-    a = App(tmp_path, link_factory=factory, link_provider=provider)
-    # Avoid the first-run dialog blocking the test; simulate having a key.
+    data_dir = tmp_path_factory.mktemp("control")
+    a = App(data_dir, link_factory=factory, link_provider=provider)
     a.key = b"\x00" * 32
-    yield a, provider
+    _session_app.append(a)
+    yield a, provider, data_dir
+    # Stop background work; let process exit clean up Tk.
     try:
-        a._on_close()
+        a.poller.stop(join_timeout=1.0)
     except Exception:
         pass
+
+
+@pytest.fixture
+def app(_module_app, tmp_path):
+    """Per-test view of the shared App, with its store reset.
+
+    Each test gets a clean store (no leftover slaves/batfiles from
+    previous tests) by re-pointing the App at a fresh data directory
+    and reloading. This is the equivalent of constructing a new App
+    without actually creating a new Tk root.
+    """
+    a, provider, _ = _module_app
+
+    # Repoint the store at a fresh per-test dir.
+    from simpit_control import data as sp_control_data
+    a.paths = sp_control_data.ControlPaths.under(tmp_path)
+    a.paths.ensure()
+    a.store = sp_control_data.Store(a.paths)
+    a.controller.store = a.store
+
+    # Clear the mock provider's slaves so each test starts fresh.
+    provider._states.clear()
+
+    a._refresh_dashboard()
+    a.update_idletasks()
+
+    yield a, provider
 
 
 # ── Construction smoke test ──────────────────────────────────────────────────

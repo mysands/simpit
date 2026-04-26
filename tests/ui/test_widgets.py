@@ -35,14 +35,22 @@ from simpit_control.ui.widgets import (
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 @pytest.fixture
-def root():
-    """A hidden Tk root for widget tests."""
-    r = tk.Tk()
-    r.withdraw()
-    yield r
+def root(tk_session_root):
+    """A hidden Toplevel under the session-scoped Tk root.
+
+    We use Toplevel rather than constructing a fresh Tk() because
+    multiple Tk roots in the same process is unsupported and the
+    destroy-then-recreate cycle fails on Python 3.14 + Windows. The
+    session_root fixture (in conftest.py) keeps a single Tk alive for
+    the whole session; each test gets its own throwaway Toplevel as
+    a parent for its widgets.
+    """
+    top = tk.Toplevel(tk_session_root)
+    top.withdraw()
+    yield top
     try:
-        r.update_idletasks()
-        r.destroy()
+        top.update_idletasks()
+        top.destroy()
     except tk.TclError:
         pass
 

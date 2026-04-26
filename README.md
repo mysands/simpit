@@ -67,7 +67,7 @@ pip install simpit
 ### From source
 
 ```bash
-git clone https://github.com/yourname/simpit
+git clone https://github.com/mysands/simpit
 cd simpit
 pip install -e .[dev]      # editable install + dev tools
 ```

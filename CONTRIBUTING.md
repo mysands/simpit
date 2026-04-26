@@ -21,7 +21,7 @@ can spend time on the work, not the protocol.
 ## Development setup
 
 ```bash
-git clone https://github.com/yourname/simpit
+git clone https://github.com/mysands/simpit
 cd simpit
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate

@@ -62,8 +62,8 @@ simpit-control = "simpit_control.__main__:main"
 simpit-slave   = "simpit_slave.__main__:main"
 
 [project.urls]
-Homepage      = "https://github.com/yourname/simpit"
-"Bug Tracker" = "https://github.com/yourname/simpit/issues"
+Homepage      = "https://github.com/mysands/simpit"
+"Bug Tracker" = "https://github.com/mysands/simpit/issues"
 
 [tool.setuptools.packages.find]
 where    = ["."]

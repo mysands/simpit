@@ -71,5 +71,5 @@ Initial alpha release.
 - Slaves and Control share a single secret; rotation is
   delete-and-regenerate with no automatic key migration.
 
-[Unreleased]: https://github.com/yourname/simpit/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/yourname/simpit/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mysands/simpit/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mysands/simpit/releases/tag/v0.1.0

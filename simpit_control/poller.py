@@ -243,7 +243,6 @@ class Poller:
 
         # Build the probe list from registered batfiles that have probes.
         probes = []
-        env: dict[str, str] = {}
         for b in self.store.batfiles():
             if b.state_probe:
                 # `name` defaults to batfile id so probes can be looked up
@@ -253,6 +252,10 @@ class Poller:
                     "type":   b.state_probe.get("type", ""),
                     "params": b.state_probe.get("params", {}),
                 })
+
+        # Per-slave env block: machine-specific vars (XPLANE_FOLDER, etc.)
+        # Drive probe evaluation that depends on machine-local paths.
+        env: dict[str, str] = dict(slave.env) if slave.env else {}
 
         try:
             body = link.status(probes=probes, env=env)

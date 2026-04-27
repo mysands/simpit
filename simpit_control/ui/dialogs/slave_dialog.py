@@ -29,8 +29,8 @@ class SlaveDialog(tk.Toplevel):
 
         self.title("Edit Slave" if existing else "Add Slave")
         self.configure(bg=theme.BG)
-        self.resizable(False, False)
-        self.geometry("420x340")
+        self.resizable(False, True)
+        self.geometry("480x560")
         self.transient(parent)
         self.grab_set()
 
@@ -50,9 +50,32 @@ class SlaveDialog(tk.Toplevel):
         self._field("TCP PORT", self.var_tcp)
         self._field("NOTES (optional)", self.var_notes)
 
+        # ── Env editor ──────────────────────────────────────────────────────
+        tk.Label(self, text="ENVIRONMENT VARS (KEY=VALUE, one per line)",
+                 font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
+                 ).pack(anchor="w", padx=20, pady=(12, 2))
+
+        env_frame = tk.Frame(self, bg=theme.BORDER, bd=1)
+        env_frame.pack(fill="x", padx=20)
+        self._env_text = tk.Text(
+            env_frame, font=theme.FONT_BODY,
+            bg=theme.ENTRY_BG, fg=theme.TEXT,
+            insertbackground=theme.TEXT, relief="flat", bd=4,
+            height=5, width=40, wrap="none",
+        )
+        self._env_text.pack(fill="both", expand=True)
+        # Populate from existing slave env
+        if e and e.env:
+            lines = "\n".join(f"{k}={v}" for k, v in sorted(e.env.items()))
+            self._env_text.insert("1.0", lines)
+
+        tk.Label(self, text="e.g.  XPLANE_FOLDER=C:\\X-Plane 12\\  SIM_EXE_NAME=X-Plane.exe",
+                 font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
+                 ).pack(anchor="w", padx=20, pady=(2, 0))
+
         # Buttons
         btns = tk.Frame(self, bg=theme.BG)
-        btns.pack(fill="x", padx=20, pady=(20, 12), side="bottom")
+        btns.pack(fill="x", padx=20, pady=(16, 12), side="bottom")
         theme.make_button(btns, "Cancel", self.destroy,
                             color=theme.BTN_DANGER, width=10).pack(side="left")
         theme.make_button(btns, "Save", self._save,
@@ -69,6 +92,25 @@ class SlaveDialog(tk.Toplevel):
                  highlightcolor=theme.ACCENT,
                  ).pack(fill="x", padx=20, ipady=5)
 
+    def _parse_env(self) -> dict[str, str]:
+        """Parse the env text box into a dict, ignoring blank/comment lines."""
+        env: dict[str, str] = {}
+        raw = self._env_text.get("1.0", "end").strip()
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise ValueError(
+                    f"Invalid env line (expected KEY=VALUE): {line!r}")
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip()
+            if not key:
+                raise ValueError(f"Empty key in env line: {line!r}")
+            env[key] = val
+        return env
+
     def _save(self) -> None:
         try:
             udp = int(self.var_udp.get())
@@ -78,17 +120,22 @@ class SlaveDialog(tk.Toplevel):
                                   parent=self)
             return
         try:
+            env = self._parse_env()
+        except ValueError as e:
+            messagebox.showerror("Invalid env", str(e), parent=self)
+            return
+        try:
             if self.existing is None:
                 slave = self.controller.add_slave(
                     name=self.var_name.get(), host=self.var_host.get(),
                     udp_port=udp, tcp_port=tcp,
-                    notes=self.var_notes.get())
+                    notes=self.var_notes.get(), env=env)
             else:
                 slave = sp_data.Slave(
                     id=self.existing.id,
                     name=self.var_name.get(), host=self.var_host.get(),
                     udp_port=udp, tcp_port=tcp,
-                    notes=self.var_notes.get())
+                    notes=self.var_notes.get(), env=env)
                 self.controller.update_slave(slave)
         except ValueError as e:
             messagebox.showerror("Invalid input", str(e), parent=self)

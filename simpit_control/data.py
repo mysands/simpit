@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +82,12 @@ class Slave:
 
     `name` is a human label shown in the UI ("CENTERLEFT").
     `host` is what gets passed to socket.connect — IP or DNS name.
+
+    `env` holds machine-specific environment variables passed to every
+    EXEC_SCRIPT and STATUS probe request sent to this slave. Scripts use
+    these via ${VAR} substitution — e.g. XPLANE_FOLDER, SIM_EXE_NAME.
+    Slaves store no local config; Control is the sole source of truth
+    for what paths/names a given slave should use.
     """
     id:        str
     name:      str
@@ -89,12 +95,28 @@ class Slave:
     udp_port:  int = 49100
     tcp_port:  int = 49101
     notes:     str = ""
+    env:       dict = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.env is None:
+            self.env = {}
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = {
+            "id":       self.id,
+            "name":     self.name,
+            "host":     self.host,
+            "udp_port": self.udp_port,
+            "tcp_port": self.tcp_port,
+            "notes":    self.notes,
+            "env":      dict(self.env),
+        }
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Slave":
+        raw_env = d.get("env") or {}
+        env = {str(k): str(v) for k, v in raw_env.items()} if isinstance(raw_env, dict) else {}
         return cls(
             id        = str(d["id"]),
             name      = str(d["name"]),
@@ -102,6 +124,7 @@ class Slave:
             udp_port  = int(d.get("udp_port", 49100)),
             tcp_port  = int(d.get("tcp_port", 49101)),
             notes     = str(d.get("notes", "")),
+            env       = env,
         )
 
 
@@ -265,11 +288,13 @@ class Store:
 
     def add_slave(self, name: str, host: str,
                   udp_port: int = 49100, tcp_port: int = 49101,
-                  notes: str = "") -> Slave:
+                  notes: str = "",
+                  env: dict[str, str] | None = None) -> Slave:
         """Register a new slave. Generates a fresh id."""
         slave_id = _new_id("slave")
         slave = Slave(id=slave_id, name=name, host=host,
-                      udp_port=udp_port, tcp_port=tcp_port, notes=notes)
+                      udp_port=udp_port, tcp_port=tcp_port,
+                      notes=notes, env=env or {})
         self._slaves[slave_id] = slave
         self.save()
         return slave

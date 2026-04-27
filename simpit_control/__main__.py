@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import data as sp_data
 from . import mock_slave as sp_mock
+from . import registry as sp_registry
 from .ui.app import App
 
 
@@ -77,6 +78,14 @@ def main(argv: list[str] | None = None) -> int:
         app = App(args.data_dir,
                    link_factory=factory, link_provider=provider)
     else:
+        # Seed standard scripts on first run (or after an upgrade that
+        # adds new standard scripts). Safe to call every time — idempotent.
+        paths = sp_data.ControlPaths.under(args.data_dir)
+        store = sp_data.Store(paths)
+        n = sp_registry.seed_registry(store)
+        if n:
+            logging.getLogger(__name__).info(
+                "Seeded %d standard script(s) from registry.", n)
         app = App(args.data_dir)
     app.maybe_show_first_run_notice()
     app.mainloop()

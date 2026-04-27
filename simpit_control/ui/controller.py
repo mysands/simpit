@@ -100,7 +100,8 @@ class Controller:
     # ── Slave CRUD ──
     def add_slave(self, name: str, host: str,
                   udp_port: int = 49100, tcp_port: int = 49101,
-                  notes: str = "") -> sp_data.Slave:
+                  notes: str = "",
+                  env: dict[str, str] | None = None) -> sp_data.Slave:
         """Validate inputs and add to the store. Synchronous.
 
         Validation lives here rather than in the data layer because the
@@ -119,7 +120,7 @@ class Controller:
             raise ValueError(f"tcp_port out of range: {tcp_port}")
         return self.store.add_slave(name=name, host=host,
                                      udp_port=udp_port, tcp_port=tcp_port,
-                                     notes=notes)
+                                     notes=notes, env=env or {})
 
     def update_slave(self, slave: sp_data.Slave) -> None:
         if not slave.name.strip():
@@ -191,8 +192,11 @@ class Controller:
 
         def _run():
             link = self.link_factory(slave)
+            # slave.env provides machine-specific defaults (XPLANE_FOLDER etc.);
+            # caller-supplied env overrides for one-off parameter injection.
+            merged_env = {**slave.env, **(env or {})}
             try:
-                body = link.exec_script(bat.script_name, env_overrides=env)
+                body = link.exec_script(bat.script_name, env_overrides=merged_env)
                 ok = bool(body.get("found")) and body.get("exit_code") == 0
                 msg = (f"{bat.name} on {slave.name} -> exit "
                        f"{body.get('exit_code')}")

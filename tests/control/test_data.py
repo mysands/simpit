@@ -28,6 +28,33 @@ class TestSlave:
         assert s.udp_port == 49100
         assert s.tcp_port == 49101
 
+    def test_env_defaults_to_empty_dict(self):
+        s = sp_data.Slave(id="s", name="N", host="h")
+        assert s.env == {}
+
+    def test_env_roundtrips_through_dict(self):
+        env = {"XPLANE_FOLDER": "C:\\X-Plane 12\\", "SIM_EXE_NAME": "X-Plane.exe"}
+        s = sp_data.Slave(id="s", name="N", host="h", env=env)
+        out = sp_data.Slave.from_dict(s.to_dict())
+        assert out.env == env
+
+    def test_env_from_dict_tolerates_missing_key(self):
+        s = sp_data.Slave.from_dict({"id": "x", "name": "A", "host": "h"})
+        assert s.env == {}
+
+    def test_env_from_dict_ignores_non_dict_env(self):
+        s = sp_data.Slave.from_dict({"id": "x", "name": "A", "host": "h", "env": "bad"})
+        assert s.env == {}
+
+    def test_add_slave_persists_env(self, tmp_path):
+        store = sp_data.Store(sp_data.ControlPaths.under(tmp_path))
+        env = {"XPLANE_FOLDER": "/opt/xplane"}
+        s = store.add_slave(name="A", host="h", env=env)
+        store2 = sp_data.Store(sp_data.ControlPaths.under(tmp_path))
+        loaded = store2.get_slave(s.id)
+        assert loaded is not None
+        assert loaded.env == env
+
 
 # ── BatFile dataclass ────────────────────────────────────────────────────────
 class TestBatFile:

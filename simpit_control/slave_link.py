@@ -93,19 +93,18 @@ class SlaveLink:
 
     # ── STATUS ──
     def status(self, probes: list[dict] | None = None,
-               env: dict[str, str] | None = None,
                timeout: float = DEFAULT_UDP_TIMEOUT) -> dict:
         """Request a STATUS snapshot.
 
         `probes` lets Control ask the slave to evaluate specific state
-        queries (e.g. is the scenery folder enabled?). The slave returns
-        always-on facts plus the requested probe outcomes.
+        queries (e.g. is the scenery folder enabled?). Probe params must
+        already have any ``${VAR}`` references resolved — Control does
+        that before sending so the slave can stay config-free. The slave
+        returns always-on facts plus the requested probe outcomes.
         """
         body: dict = {}
         if probes is not None:
             body["probes"] = probes
-        if env is not None:
-            body["env"] = env
         msg = sp_protocol.make_envelope("STATUS", body=body)
         reply = self._udp_call(msg, timeout=timeout)
         return reply.body if isinstance(reply.body, dict) else {}

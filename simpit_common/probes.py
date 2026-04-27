@@ -84,6 +84,39 @@ def _expand(s: str, env: dict[str, str]) -> str:
     return _ENV_RE.sub(lambda m: env.get(m.group(1), m.group(0)), s)
 
 
+def resolve_params(params: dict, env: dict[str, str]) -> dict:
+    """Return a copy of `params` with ``${VAR}`` references substituted.
+
+    Walks nested dicts and lists so probe params with structured values
+    (e.g. a list of paths) all get expanded. Non-string leaves are
+    passed through unchanged.
+
+    Used on the Control side to pre-resolve probe params before sending
+    a STATUS request — the slave then evaluates literal params and never
+    needs to know what ``${XPLANE_FOLDER}`` means. Keeping the
+    substitution registry on Control alone avoids shipping the env block
+    on every 5-second STATUS poll, and reinforces the rule that Control
+    is the sole source of truth for machine-specific values.
+
+    The slave-side evaluators still call :func:`_expand` defensively so
+    a probe constructed by older Control versions, or via the manual
+    inspector path, still resolves correctly.
+    """
+    if not isinstance(params, dict):
+        return params
+
+    def _walk(v):
+        if isinstance(v, str):
+            return _expand(v, env)
+        if isinstance(v, dict):
+            return {k: _walk(vv) for k, vv in v.items()}
+        if isinstance(v, list):
+            return [_walk(item) for item in v]
+        return v
+
+    return {k: _walk(v) for k, v in params.items()}
+
+
 # ── Evaluators ───────────────────────────────────────────────────────────────
 def _eval_path_exists(params: dict, env: dict[str, str]) -> ProbeResult:
     """True iff a path exists. Works for files, directories, symlinks."""

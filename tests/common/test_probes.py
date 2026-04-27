@@ -133,3 +133,47 @@ class TestRegistry:
         probes.register("dupe_name_test", fn)
         with pytest.raises(ValueError):
             probes.register("dupe_name_test", fn)
+
+
+class TestResolveParams:
+    """resolve_params is the Control-side substitution helper that
+    pre-resolves ${VAR} references before STATUS goes on the wire."""
+
+    def test_simple_string_substitution(self):
+        out = probes.resolve_params(
+            {"path": "${X}/scenery"}, {"X": "/opt/xplane"})
+        assert out == {"path": "/opt/xplane/scenery"}
+
+    def test_unknown_var_left_as_is(self):
+        out = probes.resolve_params({"path": "${MISSING}/x"}, {})
+        assert out == {"path": "${MISSING}/x"}
+
+    def test_non_string_values_passed_through(self):
+        out = probes.resolve_params(
+            {"flag": True, "count": 3, "path": "${X}"}, {"X": "/y"})
+        assert out == {"flag": True, "count": 3, "path": "/y"}
+
+    def test_nested_dict_substituted(self):
+        out = probes.resolve_params(
+            {"params": {"path": "${X}", "name": "constant"}},
+            {"X": "/y"})
+        assert out == {"params": {"path": "/y", "name": "constant"}}
+
+    def test_list_substituted(self):
+        out = probes.resolve_params(
+            {"paths": ["${X}/a", "${X}/b", "literal"]}, {"X": "/y"})
+        assert out == {"paths": ["/y/a", "/y/b", "literal"]}
+
+    def test_empty_env_is_no_op(self):
+        params = {"path": "literal/path", "name": "x"}
+        out = probes.resolve_params(params, {})
+        assert out == params
+
+    def test_non_dict_input_returns_input(self):
+        # Defensive: caller might pass None/etc; we don't crash.
+        assert probes.resolve_params("not a dict", {"X": "y"}) == "not a dict"
+
+    def test_does_not_mutate_input(self):
+        params = {"path": "${X}/scenery"}
+        probes.resolve_params(params, {"X": "/opt"})
+        assert params == {"path": "${X}/scenery"}

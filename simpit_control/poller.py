@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Protocol
 
+from simpit_common import probes as sp_probes
+
 from . import data as sp_data
 from . import slave_link as sp_link
 
@@ -242,23 +244,25 @@ class Poller:
         now = time.time()
 
         # Build the probe list from registered batfiles that have probes.
+        # Resolve any ${VAR} references in probe params using slave.env
+        # before sending — the slave evaluates literal params, so we don't
+        # need to ship the env block on every 5-second STATUS poll.
+        slave_env: dict[str, str] = dict(slave.env) if slave.env else {}
         probes = []
         for b in self.store.batfiles():
             if b.state_probe:
-                # `name` defaults to batfile id so probes can be looked up
-                # back on Control by id without parsing labels.
+                resolved_params = sp_probes.resolve_params(
+                    b.state_probe.get("params", {}), slave_env)
                 probes.append({
+                    # `name` defaults to batfile id so probes can be looked up
+                    # back on Control by id without parsing labels.
                     "name":   b.id,
                     "type":   b.state_probe.get("type", ""),
-                    "params": b.state_probe.get("params", {}),
+                    "params": resolved_params,
                 })
 
-        # Per-slave env block: machine-specific vars (XPLANE_FOLDER, etc.)
-        # Drive probe evaluation that depends on machine-local paths.
-        env: dict[str, str] = dict(slave.env) if slave.env else {}
-
         try:
-            body = link.status(probes=probes, env=env)
+            body = link.status(probes=probes)
         except sp_link.SlaveBadResponse as e:
             self._set_state(slave.id, SlaveState.ERROR,
                             error=f"key/format mismatch: {e}",

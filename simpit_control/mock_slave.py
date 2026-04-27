@@ -93,7 +93,6 @@ class MockSlaveLink:
 
     # ── STATUS ──
     def status(self, probes: list[dict] | None = None,
-               env: dict[str, str] | None = None,
                timeout: float = 2.0) -> dict:
         self._maybe_misbehave()
         outcomes = []

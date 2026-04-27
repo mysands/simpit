@@ -73,6 +73,63 @@ class TestPollOneBehaviour:
         cached = p.get(s.id)
         assert cached.probe_results.get(bat.id) == "absent"
 
+    def test_probe_params_resolved_with_slave_env_before_send(
+            self, store, provider, monkeypatch):
+        """Poller must substitute ${VAR} from slave.env into probe params
+        Control-side, so the slave receives literal paths and we don't
+        ship the env block on every STATUS poll."""
+        env = {"XPLANE_FOLDER": "/opt/xp", "SIM_EXE_NAME": "X-Plane"}
+        s = store.add_slave(name="X", host="h", env=env)
+        store.add_batfile(
+            name="scenery", script_name="x", cascade=True,
+            state_probe={"type": "folder_exists",
+                         "params": {"path": "${XPLANE_FOLDER}/Custom Scenery"}})
+        state = provider.add(s.id, sp_mock.MockSlaveState())
+
+        # Capture the args the link receives.
+        captured = {}
+        link = provider.link_for(s)
+        orig_status = link.status
+
+        def spy_status(probes=None, timeout=2.0):
+            captured["probes"] = probes
+            captured["kwargs"] = {"timeout": timeout}
+            return orig_status(probes=probes, timeout=timeout)
+
+        monkeypatch.setattr(link, "status", spy_status)
+        # Pin the provider to return our spied link
+        monkeypatch.setattr(provider, "link_for", lambda slave: link)
+
+        p = sp_poller.Poller(store, provider)
+        p._poll_one(s)
+
+        assert "probes" in captured
+        assert len(captured["probes"]) == 1
+        # ${XPLANE_FOLDER} resolved to literal path before sending
+        assert captured["probes"][0]["params"]["path"] == "/opt/xp/Custom Scenery"
+        # No env field anywhere in what we sent
+        assert "env" not in captured.get("kwargs", {})
+
+    def test_status_called_without_env_kwarg(self, store, provider, monkeypatch):
+        """Sanity: link.status() no longer accepts/receives env."""
+        s = store.add_slave(name="X", host="h", env={"FOO": "bar"})
+        provider.add(s.id, sp_mock.MockSlaveState())
+        link = provider.link_for(s)
+
+        seen_kwargs = {}
+        orig = link.status
+
+        def spy(**kwargs):
+            seen_kwargs.update(kwargs)
+            return orig(**kwargs)
+
+        monkeypatch.setattr(link, "status", spy)
+        monkeypatch.setattr(provider, "link_for", lambda slave: link)
+
+        p = sp_poller.Poller(store, provider)
+        p._poll_one(s)
+        assert "env" not in seen_kwargs
+
 
 # ── State recovery ───────────────────────────────────────────────────────────
 class TestRecovery:

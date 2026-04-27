@@ -83,10 +83,15 @@ def handle_envelope(env: sp_protocol.Envelope,
 
     if env.cmd == "STATUS":
         body = env.body if isinstance(env.body, dict) else {}
+        # Control resolves ${VAR} in probe params before sending, so we
+        # don't need an env block here. The empty dict still lets the
+        # slave-side _expand fallback handle any literal ${VAR} a probe
+        # sneaks through (older Control, manual inspector, etc.) — those
+        # just stay as-is, which surfaces visibly in the UI.
         snap = sp_inspector.snapshot(
             paths,
             probe_requests=body.get("probes"),
-            env=body.get("env") or {},
+            env={},
         )
         return _ok("STATUS_RESULT", snap.to_dict(), key)
 

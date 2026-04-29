@@ -22,6 +22,7 @@ from . import data as sp_data
 from . import mock_slave as sp_mock
 from . import registry as sp_registry
 from .ui.app import App
+from .ui.theme import enable_dpi_awareness
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -72,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _setup_logging(args.verbose)
+    enable_dpi_awareness()   # must be before Tk() is created
 
     if args.debug_fleet:
         factory, provider = _build_debug_fleet(args.data_dir)

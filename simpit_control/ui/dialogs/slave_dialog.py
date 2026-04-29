@@ -84,7 +84,7 @@ class SlaveDialog(tk.Toplevel):
                  insertbackground=theme.TEXT, relief="flat", bd=0,
                  highlightthickness=1, highlightbackground=theme.BORDER,
                  highlightcolor=theme.ACCENT,
-                 ).pack(fill="x", padx=20, ipady=5)
+                 ).pack(fill="x", padx=20, ipady=theme.TOUCH_PADY)
 
     def _build_env(self) -> dict[str, str]:
         """Build env dict from the hardwired fields."""

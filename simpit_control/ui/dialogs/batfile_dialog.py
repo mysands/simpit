@@ -169,7 +169,7 @@ class BatFileDialog(tk.Toplevel):
                  insertbackground=theme.TEXT, relief="flat", bd=0,
                  highlightthickness=1, highlightbackground=theme.BORDER,
                  highlightcolor=theme.ACCENT,
-                 ).pack(fill="x", padx=20, ipady=5)
+                 ).pack(fill="x", padx=20, ipady=theme.TOUCH_PADY)
 
     def _update_cascade_visibility(self) -> None:
         # Visual hint only — fields stay visible always so the user can

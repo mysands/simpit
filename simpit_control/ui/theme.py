@@ -13,6 +13,18 @@ original for continuity (existing screenshots/docs still apply).
 Status colors map to :class:`simpit_control.poller.SlaveState` values
 in :func:`color_for_state` so a state addition only needs one update
 here, not in every widget that paints a status.
+
+Touch guidelines applied
+------------------------
+Apple HIG / WCAG 2.5.5 minimum: 44×44 logical pixels per target.
+Google Material: 48×48dp recommended. Microsoft WinUI: 40×40px.
+We target 44px height on all interactive elements via TOUCH_PADY,
+and TOUCH_SPACING (8px) between adjacent targets.
+
+On Windows, touch drivers translate finger events to mouse events
+transparently — no special tkinter event handling is required.
+DPI awareness is enabled in __main__ before Tk() is created so
+the app is physically the right size on high-DPI / 4K displays.
 """
 from __future__ import annotations
 
@@ -55,11 +67,16 @@ FONT_TINY        = ("Consolas", 9)
 FONT_MONO        = ("Consolas", 10)
 
 
+# ── Touch sizing ─────────────────────────────────────────────────────────────
+# Minimum interactive target height per Apple HIG / WCAG 2.5.5: 44px.
+# TOUCH_PADY is the vertical inner padding added to buttons to reach that
+# height when combined with the font height (~18px for FONT_BODY_BOLD).
+# TOUCH_SPACING is the minimum gap between adjacent interactive elements.
+TOUCH_PADY    = 10   # ipady on buttons  →  ~18px text + 2*10 = 38px + border ≈ 44px
+TOUCH_SPACING = 8    # padx/pady between buttons
+
+
 # ── State -> color mapping ───────────────────────────────────────────────────
-# Imported at the top of widgets that paint slave status. Keep this in
-# sync with simpit_control.poller.SlaveState — adding a new state means
-# adding an entry here too. We don't import SlaveState directly to avoid
-# a cycle; widgets pass the string value.
 STATE_COLORS: dict[str, str] = {
     "unknown":  GREY,
     "offline":  RED,
@@ -96,6 +113,9 @@ def make_button(parent, text: str, command,
                 font: tuple = FONT_BODY_BOLD):
     """Build a flat dark-themed button with hover effect.
 
+    Vertical padding is set to TOUCH_PADY so all buttons meet the 44px
+    minimum touch target height on standard-DPI displays.
+
     Returns a tk.Button instance. We import tkinter lazily so the rest
     of this module is import-cheap and theme constants can be used by
     pure-logic code without dragging Tk in.
@@ -106,7 +126,7 @@ def make_button(parent, text: str, command,
         bg=color, fg=TEXT,
         activebackground=BTN_HOV, activeforeground=TEXT,
         relief="flat", bd=0, cursor="hand2",
-        padx=12, pady=8, command=command,
+        padx=16, pady=TOUCH_PADY, command=command,
     )
     if width is not None:
         kwargs["width"] = width
@@ -114,3 +134,27 @@ def make_button(parent, text: str, command,
     btn.bind("<Enter>", lambda e: btn.config(bg=BTN_HOV))
     btn.bind("<Leave>", lambda e: btn.config(bg=color))
     return btn
+
+
+def enable_dpi_awareness() -> None:
+    """Enable per-monitor DPI awareness on Windows.
+
+    Must be called BEFORE Tk() is created. Without this, Windows
+    renders the app blurry and scales it down on high-DPI / 4K
+    displays, making touch targets physically smaller than designed.
+    No-ops on non-Windows platforms.
+    """
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            # Fallback for older Windows versions
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+

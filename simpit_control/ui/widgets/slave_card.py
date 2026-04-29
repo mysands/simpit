@@ -104,9 +104,9 @@ class SlaveCardWidget(tk.Frame):
                  bg=theme.SECTION_BG, fg=bottom_color,
                  ).pack(anchor="w", padx=12, pady=(4, 4))
 
-        # Action row
+        # Action row — 8px spacing between buttons, TOUCH_PADY for height
         actions = tk.Frame(self, bg=theme.SECTION_BG)
-        actions.pack(fill="x", padx=8, pady=(4, 8))
+        actions.pack(fill="x", padx=8, pady=(4, 10))
 
         disabled = vm.is_offline or vm.is_syncing
         self._mk_action(actions, "Sync",     self._sync,     disabled)
@@ -127,13 +127,13 @@ class SlaveCardWidget(tk.Frame):
             bg=color if not disabled else theme.GREY,
             fg=theme.TEXT, relief="flat", bd=0,
             cursor="hand2" if not disabled else "arrow",
-            padx=10, pady=4,
+            padx=12, pady=theme.TOUCH_PADY,
             command=fn if not disabled else (lambda: None),
         )
         if width is not None:
             kwargs["width"] = width
         btn = tk.Button(parent, **kwargs)
-        btn.pack(side="left", padx=(0, 4))
+        btn.pack(side="left", padx=(0, theme.TOUCH_SPACING))
 
     # ── Actions ──
     def _sync(self) -> None:

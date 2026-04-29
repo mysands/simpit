@@ -46,13 +46,13 @@ BTN_AMBER   = "#7C5A00"   # toggle-active background
 
 
 # ── Fonts ────────────────────────────────────────────────────────────────────
-FONT_TITLE       = ("Consolas", 13, "bold")
-FONT_HEADING     = ("Consolas", 10, "bold")
-FONT_BODY        = ("Consolas", 9)
-FONT_BODY_BOLD   = ("Consolas", 9, "bold")
-FONT_SMALL       = ("Consolas", 8)
-FONT_TINY        = ("Consolas", 7)
-FONT_MONO        = ("Consolas", 8)
+FONT_TITLE       = ("Consolas", 15, "bold")
+FONT_HEADING     = ("Consolas", 12, "bold")
+FONT_BODY        = ("Consolas", 11)
+FONT_BODY_BOLD   = ("Consolas", 11, "bold")
+FONT_SMALL       = ("Consolas", 10)
+FONT_TINY        = ("Consolas", 9)
+FONT_MONO        = ("Consolas", 10)
 
 
 # ── State -> color mapping ───────────────────────────────────────────────────

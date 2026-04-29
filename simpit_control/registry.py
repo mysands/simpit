@@ -32,7 +32,23 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+import sys
+
 _SCRIPTS_DIR = Path(__file__).parent / "scripts"
+
+
+def _scripts_dir() -> Path:
+    """Return the scripts directory, handling PyInstaller onefile bundles.
+
+    When frozen by PyInstaller (--onefile), __file__ points into a temp
+    extraction folder that doesn't contain the scripts/ subdirectory.
+    PyInstaller sets sys._MEIPASS to the extraction root, so we use that
+    as the base instead. In normal (non-frozen) execution __file__ is
+    reliable and we use it directly.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "simpit_control" / "scripts"
+    return Path(__file__).parent / "scripts"
 
 
 def _load(filename: str) -> str:
@@ -41,7 +57,7 @@ def _load(filename: str) -> str:
     Returns empty string if the file doesn't exist so that platform-specific
     files (e.g. no .sh on a Windows-only fleet) don't hard-error.
     """
-    p = _SCRIPTS_DIR / filename
+    p = _scripts_dir() / filename
     if not p.exists():
         log.warning("registry: script file not found: %s", p)
         return ""

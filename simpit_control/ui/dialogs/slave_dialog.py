@@ -29,8 +29,8 @@ class SlaveDialog(tk.Toplevel):
 
         self.title("Edit Slave" if existing else "Add Slave")
         self.configure(bg=theme.BG)
-        self.resizable(False, True)
-        self.geometry("480x560")
+        self.resizable(False, False)
+        self.geometry("480x480")
         self.transient(parent)
         self.grab_set()
 
@@ -50,28 +50,22 @@ class SlaveDialog(tk.Toplevel):
         self._field("TCP PORT", self.var_tcp)
         self._field("NOTES (optional)", self.var_notes)
 
-        # ── Env editor ──────────────────────────────────────────────────────
-        tk.Label(self, text="ENVIRONMENT VARS (KEY=VALUE, one per line)",
-                 font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
-                 ).pack(anchor="w", padx=20, pady=(12, 2))
+        # ── Known env vars ───────────────────────────────────────────────────
+        tk.Label(self, text="X-PLANE CONFIGURATION",
+                 font=theme.FONT_HEADING, bg=theme.BG, fg=theme.ACCENT,
+                 ).pack(anchor="w", padx=20, pady=(16, 4))
 
-        env_frame = tk.Frame(self, bg=theme.BORDER, bd=1)
-        env_frame.pack(fill="x", padx=20)
-        self._env_text = tk.Text(
-            env_frame, font=theme.FONT_BODY,
-            bg=theme.ENTRY_BG, fg=theme.TEXT,
-            insertbackground=theme.TEXT, relief="flat", bd=4,
-            height=5, width=40, wrap="none",
-        )
-        self._env_text.pack(fill="both", expand=True)
-        # Populate from existing slave env
-        if e and e.env:
-            lines = "\n".join(f"{k}={v}" for k, v in sorted(e.env.items()))
-            self._env_text.insert("1.0", lines)
+        existing_env = e.env if e else {}
 
-        tk.Label(self, text="e.g.  XPLANE_FOLDER=C:\\X-Plane 12\\  SIM_EXE_NAME=X-Plane.exe",
-                 font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
-                 ).pack(anchor="w", padx=20, pady=(2, 0))
+        self.var_xplane_folder = tk.StringVar(
+            value=existing_env.get("XPLANE_FOLDER", ""))
+        self.var_sim_exe = tk.StringVar(
+            value=existing_env.get("SIM_EXE_NAME", "X-Plane.exe"))
+
+        self._field("XPLANE_FOLDER  (e.g. C:\\X-Plane 12\\)",
+                    self.var_xplane_folder)
+        self._field("SIM_EXE_NAME   (e.g. X-Plane.exe)",
+                    self.var_sim_exe)
 
         # Buttons
         btns = tk.Frame(self, bg=theme.BG)
@@ -92,23 +86,18 @@ class SlaveDialog(tk.Toplevel):
                  highlightcolor=theme.ACCENT,
                  ).pack(fill="x", padx=20, ipady=5)
 
-    def _parse_env(self) -> dict[str, str]:
-        """Parse the env text box into a dict, ignoring blank/comment lines."""
-        env: dict[str, str] = {}
-        raw = self._env_text.get("1.0", "end").strip()
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                raise ValueError(
-                    f"Invalid env line (expected KEY=VALUE): {line!r}")
-            key, _, val = line.partition("=")
-            key = key.strip()
-            val = val.strip()
-            if not key:
-                raise ValueError(f"Empty key in env line: {line!r}")
-            env[key] = val
+    def _build_env(self) -> dict[str, str]:
+        """Build env dict from the hardwired fields."""
+        env = {}
+        xplane_folder = self.var_xplane_folder.get().strip()
+        sim_exe = self.var_sim_exe.get().strip()
+        if xplane_folder:
+            # Ensure trailing backslash on Windows paths
+            if xplane_folder and not xplane_folder.endswith(("\\", "/")):
+                xplane_folder += "\\"
+            env["XPLANE_FOLDER"] = xplane_folder
+        if sim_exe:
+            env["SIM_EXE_NAME"] = sim_exe
         return env
 
     def _save(self) -> None:
@@ -119,11 +108,7 @@ class SlaveDialog(tk.Toplevel):
             messagebox.showerror("Invalid port", "Ports must be integers.",
                                   parent=self)
             return
-        try:
-            env = self._parse_env()
-        except ValueError as e:
-            messagebox.showerror("Invalid env", str(e), parent=self)
-            return
+        env = self._build_env()
         try:
             if self.existing is None:
                 slave = self.controller.add_slave(

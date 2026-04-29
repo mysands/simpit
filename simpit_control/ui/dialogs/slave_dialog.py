@@ -29,12 +29,16 @@ class SlaveDialog(tk.Toplevel):
 
         self.title("Edit Slave" if existing else "Add Slave")
         self.configure(bg=theme.BG)
-        self.resizable(False, False)
-        self.geometry("480x480")
+        self.resizable(False, True)
+        self.minsize(480, 400)
         self.transient(parent)
         self.grab_set()
 
         self._build()
+        # Let tkinter size the window to fit content, then prevent
+        # horizontal resize only. update_idletasks() flushes geometry.
+        self.update_idletasks()
+        self.geometry(f"480x{self.winfo_reqheight()}")
 
     def _build(self) -> None:
         e = self.existing

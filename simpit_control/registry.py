@@ -93,18 +93,6 @@ class ScriptDef:
 
 REGISTRY: list[ScriptDef] = [
     ScriptDef(
-        name        = "Setup X-Plane Task",
-        script_name = "setup_xplane_task",
-        cascade     = True,
-        needs_admin = True,
-        state_probe = {
-            "type":   "script_exit_code",
-            "params": {"command": "schtasks /query /tn \"SimPit\\LaunchXPlane\""},
-        },
-        content_bat = _load("setup_xplane_task.py"),   # .py runs cross-platform
-        content_sh  = "",
-    ),
-    ScriptDef(
         name        = "Launch X-Plane",
         script_name = "launch_xplane",
         cascade     = True,
@@ -113,8 +101,8 @@ REGISTRY: list[ScriptDef] = [
             "type":   "process_running",
             "params": {"name": "${SIM_EXE_NAME}"},
         },
-        content_bat = _load("launch_xplane.bat"),
-        content_sh  = _load("launch_xplane.sh"),
+        content_bat = _load("launch_xplane.py"),   # .py detected by controller
+        content_sh  = "",
     ),
     ScriptDef(
         name        = "Enable Custom Scenery",

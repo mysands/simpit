@@ -22,13 +22,6 @@ class TestScriptDef:
     def test_launch_xplane_present(self):
         assert "launch_xplane" in sp_registry.REGISTRY_BY_NAME
 
-    def test_setup_xplane_task_present(self):
-        assert "setup_xplane_task" in sp_registry.REGISTRY_BY_NAME
-
-    def test_setup_xplane_task_needs_admin(self):
-        defn = sp_registry.REGISTRY_BY_NAME["setup_xplane_task"]
-        assert defn.needs_admin
-
     def test_custom_scenery_scripts_present(self):
         assert "enable_custom_scenery" in sp_registry.REGISTRY_BY_NAME
         assert "disable_custom_scenery" in sp_registry.REGISTRY_BY_NAME
@@ -68,8 +61,7 @@ class TestScriptDef:
             assert defn.content_bat, f"{name} missing .bat content"
 
     def test_sh_content_for_standard_scripts(self):
-        for name in ("launch_xplane", "enable_custom_scenery",
-                     "disable_custom_scenery"):
+        for name in ("enable_custom_scenery", "disable_custom_scenery"):
             defn = sp_registry.REGISTRY_BY_NAME[name]
             assert defn.content_sh, f"{name} missing .sh content"
 

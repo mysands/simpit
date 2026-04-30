@@ -1,11 +1,9 @@
 """
 launch_xplane.py — Launch X-Plane directly from the slave agent process.
-
 Required env: XPLANE_FOLDER, SIM_EXE_NAME
 """
 import os
 import sys
-import subprocess
 
 
 def main():
@@ -41,21 +39,11 @@ def main():
 
     print(f"Launching: {xp_exe}")
 
-    # Use ShellExecute via PowerShell — this routes through the Windows
-    # shell layer which correctly attaches the process to the interactive
-    # desktop session, same as double-clicking the exe in Explorer.
-    subprocess.Popen(
-        [
-            "powershell", "-NoProfile", "-NonInteractive",
-            "-ExecutionPolicy", "Bypass",
-            "-Command",
-            f"Start-Process -FilePath '{xp_exe}' -WorkingDirectory '{xplane_folder}'"
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
+    # os.startfile() = ShellExecute("open") — identical to double-clicking
+    # the exe in Explorer. Uses the interactive desktop session automatically,
+    # needs no environment variables, no subprocess spawning.
+    os.startfile(xp_exe)
+
     print("Done.")
     return 0
 

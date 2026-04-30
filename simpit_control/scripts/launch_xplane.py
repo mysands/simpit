@@ -1,10 +1,6 @@
 """
 launch_xplane.py — Launch X-Plane directly from the slave agent process.
 
-Works because the slave runs as the logged-in interactive user (mysan),
-so any subprocess it spawns inherits the interactive desktop session token
-and appears on the display.
-
 Required env: XPLANE_FOLDER, SIM_EXE_NAME
 """
 import os
@@ -41,12 +37,26 @@ def main():
                 print(f"{sim_exe} is already running.")
                 return 0
     except Exception:
-        pass  # psutil failure is non-fatal
+        pass
 
     print(f"Launching: {xp_exe}")
+
+    # DETACHED_PROCESS (0x00000008): fully detach from parent's console
+    # and session handles so X-Plane gets a clean interactive token.
+    # CREATE_NEW_PROCESS_GROUP (0x00000200): own process group.
+    # Combined these ensure X-Plane appears on the interactive desktop
+    # regardless of how the slave agent's stdout/stderr are redirected.
+    DETACHED_PROCESS      = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
     subprocess.Popen(
         [xp_exe],
         cwd=xplane_folder,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
         close_fds=True,
     )
     print("Done.")

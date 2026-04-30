@@ -29,10 +29,13 @@ Everything is cross-platform via :mod:`simpit_common.platform`.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import threading
 import time
+
+log = logging.getLogger(__name__)
 from dataclasses import dataclass
 from typing import Iterator
 

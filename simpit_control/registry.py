@@ -93,6 +93,19 @@ class ScriptDef:
 
 REGISTRY: list[ScriptDef] = [
     ScriptDef(
+        name        = "Setup X-Plane Task",
+        script_name = "setup_xplane_task",
+        cascade     = True,
+        needs_admin = True,   # bat self-elevates via UAC runas; flag is advisory
+        state_probe = {
+            # Probe: task exists and is ready
+            "type":   "script_exit_code",
+            "params": {"command": "schtasks /query /tn \"SimPit\\LaunchXPlane\""},
+        },
+        content_bat = _load("setup_xplane_task.bat"),
+        content_sh  = "",
+    ),
+    ScriptDef(
         name        = "Launch X-Plane",
         script_name = "launch_xplane",
         cascade     = True,

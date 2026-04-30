@@ -22,6 +22,13 @@ class TestScriptDef:
     def test_launch_xplane_present(self):
         assert "launch_xplane" in sp_registry.REGISTRY_BY_NAME
 
+    def test_setup_xplane_task_present(self):
+        assert "setup_xplane_task" in sp_registry.REGISTRY_BY_NAME
+
+    def test_setup_xplane_task_needs_admin(self):
+        defn = sp_registry.REGISTRY_BY_NAME["setup_xplane_task"]
+        assert defn.needs_admin
+
     def test_custom_scenery_scripts_present(self):
         assert "enable_custom_scenery" in sp_registry.REGISTRY_BY_NAME
         assert "disable_custom_scenery" in sp_registry.REGISTRY_BY_NAME

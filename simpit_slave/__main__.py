@@ -29,13 +29,18 @@ from . import agent as sp_agent
 from . import data as sp_data
 
 
-def _setup_logging(verbose: bool) -> None:
+def _setup_logging(verbose: bool, log_file: Path | None = None) -> None:
     """Configure logging once for the agent process."""
     level = logging.DEBUG if verbose else logging.INFO
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        handlers=handlers,
     )
 
 
@@ -92,10 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    _setup_logging(args.verbose)
-
     paths = sp_data.SlavePaths.under(args.data_dir)
     paths.ensure()
+    _setup_logging(args.verbose, log_file=paths.log_file)
     key = _ensure_key(paths.key_file, prompt=not args.no_prompt)
 
     cfg = sp_agent.AgentConfig(

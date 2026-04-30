@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -71,37 +72,41 @@ def _ensure_key(key_file: Path, prompt: bool) -> bytes:
     return key
 
 
-def _acquire_single_instance_lock():
+def _acquire_single_instance_lock(data_dir: Path):
     """Ensure only one simpit-slave process runs at a time.
 
-    On Windows uses a named kernel mutex. On POSIX uses a lock file.
-    Exits immediately with a clear message if another instance is found.
+    Uses a PID lock file — works on all platforms, no kernel API calls
+    that could trigger security software.
     """
+    lock_path = data_dir / "agent.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
     if sys.platform == "win32":
-        import ctypes
-        _MUTEX_NAME = "Global\\SimPitSlaveAgent_SingleInstance"
-        handle = ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
-        last_err = ctypes.windll.kernel32.GetLastError()
-        ERROR_ALREADY_EXISTS = 183
-        if last_err == ERROR_ALREADY_EXISTS:
-            print("ERROR: simpit-slave is already running. "
-                  "Only one instance is allowed.", file=sys.stderr)
-            sys.exit(1)
-        # Keep handle alive for process lifetime — store on module so GC
-        # doesn't release it.
-        _acquire_single_instance_lock._win_mutex = handle
-    else:
-        import fcntl
-        lock_path = Path(sp_data.default_data_dir()) / "agent.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(lock_path, "w")
+        import msvcrt
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Open for writing; exclusive lock via msvcrt.
+            fh = open(lock_path, "w")
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            fh.write(str(os.getpid()))
+            fh.flush()
+            # Keep file handle alive — released automatically on process exit.
+            _acquire_single_instance_lock._lock_fh = fh
         except OSError:
             print("ERROR: simpit-slave is already running. "
                   "Only one instance is allowed.", file=sys.stderr)
             sys.exit(1)
-        _acquire_single_instance_lock._posix_lock = fh  # keep alive
+    else:
+        import fcntl
+        try:
+            fh = open(lock_path, "w")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fh.write(str(os.getpid()))
+            fh.flush()
+            _acquire_single_instance_lock._lock_fh = fh
+        except OSError:
+            print("ERROR: simpit-slave is already running. "
+                  "Only one instance is allowed.", file=sys.stderr)
+            sys.exit(1)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,11 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    _acquire_single_instance_lock()
-    _setup_logging(args.verbose)
-
     paths = sp_data.SlavePaths.under(args.data_dir)
     paths.ensure()
+    _acquire_single_instance_lock(paths.root)
+    _setup_logging(args.verbose)
     key = _ensure_key(paths.key_file, prompt=not args.no_prompt)
 
     cfg = sp_agent.AgentConfig(

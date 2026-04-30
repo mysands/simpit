@@ -107,11 +107,18 @@ def find_script(paths: SlavePaths, name: str) -> Path | None:
     # Block path traversal aggressively. We accept ONLY a base name.
     if any(c in name for c in ("/", "\\", "\x00")) or name in ("", ".", ".."):
         return None
-    filename = sp_platform.script_filename(name)
+
+    # Resolution order: platform-native extension first (.bat/.sh),
+    # then .py fallback for cross-platform Python scripts.
+    base = name.rsplit(".", 1)[0] if "." in name else name
+    native = (name if "." in name else name + sp_platform.script_extension())
+    to_try = [native, base + ".py"]
+
     for folder in (paths.cascaded, paths.local):
-        candidate = folder / filename
-        if candidate.is_file():
-            return candidate
+        for filename in to_try:
+            candidate = folder / filename
+            if candidate.is_file():
+                return candidate
     return None
 
 

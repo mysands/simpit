@@ -96,13 +96,12 @@ REGISTRY: list[ScriptDef] = [
         name        = "Setup X-Plane Task",
         script_name = "setup_xplane_task",
         cascade     = True,
-        needs_admin = True,   # bat self-elevates via UAC runas; flag is advisory
+        needs_admin = True,
         state_probe = {
-            # Probe: task exists and is ready
             "type":   "script_exit_code",
             "params": {"command": "schtasks /query /tn \"SimPit\\LaunchXPlane\""},
         },
-        content_bat = _load("setup_xplane_task.bat"),
+        content_bat = _load("setup_xplane_task.py"),   # .py runs cross-platform
         content_sh  = "",
     ),
     ScriptDef(

@@ -224,8 +224,16 @@ class Controller:
             raise KeyError(f"unknown slave: {slave_id}")
 
         cascaded = self.store.cascaded_for_slave(slave_id)
-        scripts = [{"name": b.script_name, "content": b.content}
-                   for b in cascaded]
+        scripts = []
+        for b in cascaded:
+            name = b.script_name
+            # Python scripts: send with .py extension so the slave stores
+            # them as .py and invokes via sys.executable, not cmd.exe/sh.
+            if b.content.lstrip().startswith(("#!/usr/bin/env python",
+                                               "\"\"\"", "import ", "# -*-")):
+                if not name.endswith(".py"):
+                    name = name + ".py"
+            scripts.append({"name": name, "content": b.content})
 
         if self.poller is not None:
             self.poller.mark_syncing(slave_id)

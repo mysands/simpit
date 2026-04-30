@@ -137,9 +137,14 @@ def build_script_invocation(script_path: Path,
     """
     extra_args = list(extra_args or [])
     if current_os() == OS.WINDOWS:
-        argv = ["cmd.exe", "/c", str(script_path), *extra_args]
+        if script_path.suffix.lower() == ".py":
+            argv = [sys.executable, str(script_path), *extra_args]
+        else:
+            argv = ["cmd.exe", "/c", str(script_path), *extra_args]
     else:
-        if os.access(script_path, os.X_OK):
+        if script_path.suffix.lower() == ".py":
+            argv = [sys.executable, str(script_path), *extra_args]
+        elif os.access(script_path, os.X_OK):
             argv = [str(script_path), *extra_args]
         else:
             argv = ["sh", str(script_path), *extra_args]

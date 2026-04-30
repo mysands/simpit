@@ -123,6 +123,7 @@ def execute(
 
     script_path = sp_data.find_script(paths, script_name)
     if script_path is None:
+        log.debug("executor: script not found: %s", script_name)
         return ExecResult(
             script_name=script_name, found=False, exit_code=-1,
             stdout="", stderr="", truncated=False,
@@ -132,6 +133,8 @@ def execute(
 
     cmd = sp_platform.build_script_invocation(script_path, extra_args)
     env = _build_env(env_overrides)
+    log.debug("executor: running %s argv=%s env_keys=%s",
+              script_path, cmd.argv, list(env.keys()))
 
     try:
         proc = subprocess.Popen(
@@ -181,9 +184,12 @@ def execute(
         stderr = stderr[:MAX_OUTPUT_BYTES]
         truncated = True
 
+    rc = int(proc.returncode if proc.returncode is not None else -1)
+    log.debug("executor: exit=%d stdout=%r stderr=%r", rc,
+              stdout[:200], stderr[:200])
     return ExecResult(
         script_name=script_name, found=True,
-        exit_code=int(proc.returncode if proc.returncode is not None else -1),
+        exit_code=rc,
         stdout=stdout, stderr=stderr, truncated=truncated,
         duration_ms=int((time.monotonic() - started) * 1000),
     )

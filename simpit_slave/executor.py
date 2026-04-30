@@ -136,11 +136,15 @@ def execute(
     try:
         proc = subprocess.Popen(
             cmd.argv, cwd=str(cmd.cwd), env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, shell=False,
-            # On Windows we don't want a console flashing up for each
-            # script. CREATE_NO_WINDOW is the magic flag; no-op elsewhere.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            # CREATE_NO_WINDOW: no console flash on Windows.
+            # CREATE_NEW_PROCESS_GROUP: prevents grandchild processes
+            # (e.g. PowerShell spawning schtasks) from inheriting our
+            # pipes and causing a deadlock on communicate().
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) |
+                          getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
     except OSError as e:
         return ExecResult(
@@ -231,9 +235,11 @@ def execute_streaming(
     try:
         proc = subprocess.Popen(
             cmd.argv, cwd=str(cmd.cwd), env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, shell=False, bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) |
+                          getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
     except OSError as e:
         yield StreamFinish(exit_code=-1, duration_ms=0,

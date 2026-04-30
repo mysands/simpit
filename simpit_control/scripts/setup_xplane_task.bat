@@ -1,10 +1,12 @@
 @echo off
 REM setup_xplane_task.bat  —  Create SimPit\LaunchXPlane scheduled task.
 REM Required env: XPLANE_FOLDER  SIM_EXE_NAME
+REM
+REM Does NOT require elevation. schtasks /create /ru "" /it creates a
+REM task for the current user without admin rights on Windows 10/11.
 
 setlocal
 
-echo [DEBUG] setup_xplane_task starting
 echo [DEBUG] XPLANE_FOLDER=%XPLANE_FOLDER%
 echo [DEBUG] SIM_EXE_NAME=%SIM_EXE_NAME%
 
@@ -26,16 +28,7 @@ if not exist "%XP_EXE%" (
 )
 echo [DEBUG] executable found OK
 
-REM Check elevation via net session
-net session >nul 2>&1
-if %errorlevel%==0 (
-    echo [DEBUG] running elevated
-) else (
-    echo [DEBUG] NOT elevated, errorlevel=%errorlevel%
-)
-
-REM Attempt 1: create as current user, no elevation needed
-echo [DEBUG] attempting schtasks /create...
+echo [DEBUG] creating scheduled task...
 schtasks /create ^
     /tn "SimPit\LaunchXPlane" ^
     /tr "\"%XP_EXE%\"" ^
@@ -45,24 +38,9 @@ echo [DEBUG] schtasks exit code: %errorlevel%
 
 if %errorlevel%==0 (
     echo SUCCESS: Task SimPit\LaunchXPlane created.
-    echo X-Plane path: %XP_EXE%
     exit /b 0
 )
 
 echo ERROR: schtasks /create failed with code %errorlevel% >&2
-echo [DEBUG] attempting elevated fallback via PowerShell runas...
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Start-Process cmd.exe -ArgumentList '/c \"%~f0\"' -Verb RunAs -Wait" ^
-    2>&1
-echo [DEBUG] powershell runas exit code: %errorlevel%
-
-if %errorlevel%==0 (
-    echo Elevated setup completed.
-    exit /b 0
-)
-
-echo ERROR: Could not create task automatically. >&2
-echo MANUAL FIX: Right-click this file on the slave and Run as administrator: >&2
-echo   %~f0 >&2
+echo Run this script manually as Administrator on the slave machine. >&2
 exit /b 1

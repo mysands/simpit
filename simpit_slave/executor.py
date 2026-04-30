@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 
@@ -108,6 +109,59 @@ def _build_env(overrides: dict[str, str] | None) -> dict[str, str]:
 
 
 # ── Buffered execution ───────────────────────────────────────────────────────
+def _execute_python_inprocess(
+    script_path, env: dict, env_overrides: dict,
+    script_name: str, started: float,
+) -> "ExecResult":
+    """Run a .py script in-process using runpy.run_path.
+
+    Captures stdout/stderr and restores them after. Sets os.environ to
+    the script's env for the duration. This avoids depending on
+    sys.executable which is the .exe itself in a PyInstaller bundle.
+    """
+    import io
+    import runpy
+
+    old_env = os.environ.copy()
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    buf_out = io.StringIO()
+    buf_err = io.StringIO()
+
+    exit_code = 0
+    error = ""
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        sys.stdout = buf_out
+        sys.stderr = buf_err
+        try:
+            runpy.run_path(str(script_path), run_name="__main__")
+        except SystemExit as e:
+            exit_code = int(e.code) if e.code is not None else 0
+        except Exception as e:
+            buf_err.write(f"ERROR: {e}\n")
+            exit_code = 1
+            error = str(e)
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        os.environ.clear()
+        os.environ.update(old_env)
+
+    stdout = buf_out.getvalue()
+    stderr = buf_err.getvalue()
+    log.debug("executor (inprocess): exit=%d stdout=%r stderr=%r",
+              exit_code, stdout[:200], stderr[:200])
+    return ExecResult(
+        script_name=script_name, found=True,
+        exit_code=exit_code,
+        stdout=stdout, stderr=stderr, truncated=False,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        error=error,
+    )
+
+
 def execute(
     paths: sp_data.SlavePaths,
     script_name: str,
@@ -138,6 +192,13 @@ def execute(
     env = _build_env(env_overrides)
     log.debug("executor: running %s argv=%s env_keys=%s",
               script_path, cmd.argv, list(env.keys()))
+
+    # .py scripts are run in-process via runpy so we don't depend on
+    # sys.executable (which is the .exe itself in a PyInstaller bundle).
+    # stdout/stderr are captured by temporarily redirecting sys.stdout/stderr.
+    if script_path.suffix.lower() == ".py":
+        return _execute_python_inprocess(
+            script_path, env, env_overrides, script_name, started)
 
     try:
         proc = subprocess.Popen(

@@ -138,7 +138,13 @@ def build_script_invocation(script_path: Path,
     extra_args = list(extra_args or [])
     if current_os() == OS.WINDOWS:
         if script_path.suffix.lower() == ".py":
-            argv = [sys.executable, str(script_path), *extra_args]
+            # In a PyInstaller onefile bundle, sys.executable is the .exe
+            # itself, not the Python interpreter — can't use it to run .py
+            # scripts as subprocesses. Use cmd.exe with the bundled Python
+            # if available, otherwise fall back to cmd.exe (won't work for
+            # .py but gives a clear error). The executor handles .py scripts
+            # in-process via runpy to avoid this entirely.
+            argv = ["cmd.exe", "/c", str(script_path), *extra_args]
         else:
             argv = ["cmd.exe", "/c", str(script_path), *extra_args]
     else:

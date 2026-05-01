@@ -38,6 +38,7 @@ network kills the agent until it's manually restarted.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import socketserver
 import threading
@@ -332,6 +333,13 @@ class Agent:
             (self.config.bind_host, self.config.udp_port), _UDPHandler)
         self._udp_server.paths = self.paths        # type: ignore[attr-defined]
         self._udp_server.key   = self.key          # type: ignore[attr-defined]
+        # Mark the underlying socket non-inheritable so subprocess children
+        # (e.g. X-Plane) don't inherit it. X-Plane's MicroProfile WebServer
+        # otherwise crashes trying to use an inherited Winsock handle.
+        try:
+            os.set_inheritable(self._udp_server.socket.fileno(), False)
+        except (OSError, AttributeError):
+            pass
         self._udp_thread = threading.Thread(
             target=self._udp_server.serve_forever,
             kwargs={"poll_interval": 0.5},
@@ -344,6 +352,10 @@ class Agent:
         self._tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._tcp_socket.bind((self.config.bind_host, self.config.tcp_port))
         self._tcp_socket.listen(8)
+        try:
+            os.set_inheritable(self._tcp_socket.fileno(), False)
+        except (OSError, AttributeError):
+            pass
         self._tcp_thread = threading.Thread(
             target=self._tcp_loop, daemon=True, name="simpit-tcp")
         self._tcp_thread.start()

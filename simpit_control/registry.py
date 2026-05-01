@@ -93,18 +93,6 @@ class ScriptDef:
 
 REGISTRY: list[ScriptDef] = [
     ScriptDef(
-        name        = "Launch X-Plane",
-        script_name = "launch_xplane",
-        cascade     = True,
-        needs_admin = False,
-        state_probe = {
-            "type":   "process_running",
-            "params": {"name": "${SIM_EXE_NAME}"},
-        },
-        content_bat = _load("launch_xplane.py"),   # .py detected by controller
-        content_sh  = "",
-    ),
-    ScriptDef(
         name        = "Enable Custom Scenery",
         script_name = "enable_custom_scenery",
         cascade     = True,

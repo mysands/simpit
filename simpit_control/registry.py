@@ -159,6 +159,7 @@ REGISTRY: list[ScriptDef] = [
         content_sh  = "",
     ),
     ScriptDef(
+<<<<<<< HEAD
         # Backs up XPLANE_FOLDER (everything except Custom Scenery)
         # to BACKUP_FOLDER. Filenames embed hostname so several
         # slaves can share one BACKUP_FOLDER without collisions.
@@ -186,6 +187,18 @@ REGISTRY: list[ScriptDef] = [
         needs_admin = False,
         state_probe = None,
         content_bat = _load("restore_xplane.py"),
+=======
+        name        = "Quit X-Plane",
+        script_name = "quit_xplane",
+        cascade     = True,
+        needs_admin = False,
+        # No probe: quit is fire-and-forget UDP. Whether X-Plane is
+        # actually still running after the packet is best surfaced by
+        # the launch_xplane probe (process_running on SIM_EXE_NAME).
+        state_probe = None,
+        # .py handles both platforms — stored in content_bat by convention
+        content_bat = _load("quit_xplane.py"),
+>>>>>>> feat(scripts): add quit_xplane script
         content_sh  = "",
     ),
 ]

@@ -272,3 +272,128 @@ class TestDisableCustomSceneryScript:
         )
         assert result.exit_code != 0
         assert "not set" in result.stderr.lower()
+
+
+# ── enable_custom_scenery script (POSIX path) ────────────────────────────────
+class TestEnableCustomSceneryScript:
+    """End-to-end smoke for the .sh going through the real executor.
+    Symmetric inverse of disable: verifies the user's preserved scenery
+    is restored to active and the baseline (if any) is preserved as
+    DEFAULT for the next disable cycle."""
+
+    @pytest.fixture
+    def xp_folder(self, tmp_path):
+        f = tmp_path / "xplane"
+        f.mkdir()
+        return f
+
+    @pytest.fixture
+    def paths(self, tmp_path):
+        import shutil, os
+        from pathlib import Path
+        p = sp_data.SlavePaths.under(tmp_path / "slave")
+        p.ensure()
+        scripts_root = Path(__file__).resolve().parents[2] / "simpit_control" / "scripts"
+        for name in ("enable_custom_scenery.sh", "disable_custom_scenery.sh"):
+            dest = p.cascaded / name
+            shutil.copy(scripts_root / name, dest)
+            os.chmod(dest, 0o755)
+        return p
+
+    def _run(self, paths, name, xp_folder):
+        return sp_executor.execute(
+            paths, name,
+            env_overrides={"XPLANE_FOLDER": str(xp_folder)},
+        )
+
+    def test_disabled_present_no_current_scenery(self, paths, xp_folder):
+        """After disable then a manual delete of empty Custom Scenery —
+        DISABLED is the only thing present. Enable should still proceed,
+        skipping the baseline-preserve step."""
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery DISABLED").mkdir()
+        (xp_folder / "Custom Scenery DISABLED" / "marker.txt").write_text("user")
+
+        result = self._run(paths, "enable_custom_scenery", xp_folder)
+        assert result.exit_code == 0, result.stderr
+        assert (xp_folder / "Custom Scenery" / "marker.txt").read_text() == "user"
+        assert not (xp_folder / "Custom Scenery DISABLED").exists()
+        assert not (xp_folder / "Custom Scenery DEFAULT").exists()
+
+    def test_disabled_present_with_baseline_preserved(self, paths, xp_folder):
+        """The post-disable state: 'Custom Scenery' (the empty DEFAULT)
+        present alongside 'Custom Scenery DISABLED' (user content).
+        Enable should preserve the empty/DEFAULT and restore user content."""
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()  # empty (was DEFAULT)
+        (xp_folder / "Custom Scenery DISABLED").mkdir()
+        (xp_folder / "Custom Scenery DISABLED" / "user.txt").write_text("user-data")
+
+        result = self._run(paths, "enable_custom_scenery", xp_folder)
+        assert result.exit_code == 0, result.stderr
+        assert (xp_folder / "Custom Scenery" / "user.txt").read_text() == "user-data"
+        # Baseline preserved as DEFAULT (was the empty Custom Scenery)
+        assert (xp_folder / "Custom Scenery DEFAULT").is_dir()
+        assert list((xp_folder / "Custom Scenery DEFAULT").iterdir()) == []
+        assert not (xp_folder / "Custom Scenery DISABLED").exists()
+
+    def test_disabled_missing_errors(self, paths, xp_folder):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()
+        result = self._run(paths, "enable_custom_scenery", xp_folder)
+        assert result.exit_code != 0
+        assert "nothing to re-enable" in result.stderr.lower() \
+            or "not found" in result.stderr.lower()
+
+    def test_default_already_exists_refuses(self, paths, xp_folder):
+        """If both Custom Scenery and Custom Scenery DEFAULT exist, the
+        baseline-preserve step has nowhere to go. Refuse rather than
+        silently lose data."""
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()
+        (xp_folder / "Custom Scenery DISABLED").mkdir()
+        (xp_folder / "Custom Scenery DEFAULT").mkdir()
+
+        result = self._run(paths, "enable_custom_scenery", xp_folder)
+        assert result.exit_code != 0
+        assert "default" in result.stderr.lower()
+
+    def test_xplane_folder_unset_errors(self, paths):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        result = sp_executor.execute(
+            paths, "enable_custom_scenery",
+            env_overrides={"XPLANE_FOLDER": ""},
+        )
+        assert result.exit_code != 0
+        assert "not set" in result.stderr.lower()
+
+    def test_round_trip_preserves_user_scenery(self, paths, xp_folder):
+        """The motivating regression: disable → enable → disable should
+        leave user content intact. Before this rewrite, enable required
+        Custom Scenery to be absent and erroring made the round-trip
+        impossible."""
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        # Initial state: user has real scenery
+        (xp_folder / "Custom Scenery").mkdir()
+        (xp_folder / "Custom Scenery" / "user_airport.ini").write_text("kbed_v2")
+
+        # disable → enable → disable
+        r1 = self._run(paths, "disable_custom_scenery", xp_folder)
+        assert r1.exit_code == 0, f"disable #1: {r1.stderr}"
+        r2 = self._run(paths, "enable_custom_scenery", xp_folder)
+        assert r2.exit_code == 0, f"enable: {r2.stderr}"
+        r3 = self._run(paths, "disable_custom_scenery", xp_folder)
+        assert r3.exit_code == 0, f"disable #2: {r3.stderr}"
+
+        # User content survived the round-trip
+        assert (xp_folder / "Custom Scenery DISABLED" / "user_airport.ini") \
+            .read_text() == "kbed_v2"
+        # Custom Scenery is the empty/DEFAULT again
+        assert (xp_folder / "Custom Scenery").is_dir()
+        assert list((xp_folder / "Custom Scenery").iterdir()) == []

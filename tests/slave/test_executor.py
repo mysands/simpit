@@ -123,3 +123,152 @@ class TestExecuteStreaming:
         assert len(items) == 1
         assert isinstance(items[0], sp_executor.StreamFinish)
         assert "not found" in items[0].error
+
+
+# ── Log mirroring (regression: agent.log was empty before this fix) ──────────
+class TestLogMirror:
+    """The slave's default log level is INFO. Script execution events must
+    be visible at INFO so operators can see what ran by tailing agent.log
+    on the slave — without having to start the agent with -v."""
+
+    def test_run_summary_logged_at_info(self, tmp_path, caplog):
+        paths = sp_data.SlavePaths.under(tmp_path)
+        _write_script(paths, "echo", "echo hi\n")
+        with caplog.at_level("INFO", logger="simpit_slave.executor"):
+            sp_executor.execute(paths, "echo")
+        assert any("ran echo" in r.message and "exit=0" in r.message
+                   for r in caplog.records), \
+            "executor must log a run summary at INFO"
+
+    def test_stdout_mirrored_at_info(self, tmp_path, caplog):
+        paths = sp_data.SlavePaths.under(tmp_path)
+        _write_script(paths, "echo", "echo distinctive_log_marker\n")
+        with caplog.at_level("INFO", logger="simpit_slave.executor"):
+            sp_executor.execute(paths, "echo")
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "distinctive_log_marker" in joined, \
+            "script stdout must be mirrored into the agent log at INFO"
+
+    def test_stderr_mirrored_at_info(self, tmp_path, caplog):
+        paths = sp_data.SlavePaths.under(tmp_path)
+        if EXT == ".sh":
+            _write_script(paths, "fail", "echo distinctive_err >&2\nexit 1\n")
+        else:
+            _write_script(paths, "fail", "echo distinctive_err 1>&2\nexit /b 1\n")
+        with caplog.at_level("INFO", logger="simpit_slave.executor"):
+            sp_executor.execute(paths, "fail")
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "distinctive_err" in joined, \
+            "script stderr must be mirrored into the agent log at INFO"
+
+    def test_huge_stdout_capped_in_log(self, tmp_path, caplog):
+        # The full output still rides home in EXEC_SCRIPT_RESULT — only the
+        # *log mirror* is capped, so the slave's log doesn't blow up.
+        paths = sp_data.SlavePaths.under(tmp_path)
+        if EXT == ".sh":
+            big = "a" * (sp_executor.LOG_MIRROR_BYTES * 2)
+            _write_script(paths, "huge", f'printf %s "{big}"\n')
+        else:
+            pytest.skip("Windows .bat output-padding not portable enough")
+        with caplog.at_level("INFO", logger="simpit_slave.executor"):
+            result = sp_executor.execute(paths, "huge")
+        assert result.exit_code == 0
+        # Full output preserved on the result envelope...
+        assert len(result.stdout) >= sp_executor.LOG_MIRROR_BYTES * 2
+        # ...but the log mirror is bounded.
+        for r in caplog.records:
+            assert len(r.message) < sp_executor.LOG_MIRROR_BYTES * 2
+
+
+# ── disable_custom_scenery script (POSIX path; bat tested manually) ──────────
+class TestDisableCustomSceneryScript:
+    """End-to-end smoke for the .sh going through the real executor.
+    The .bat is a literal port — same control flow, same exit codes —
+    so we exercise the .sh here and rely on Windows manual testing for
+    the bat-specific quoting. Each test sets up an XPLANE_FOLDER fixture
+    and runs the script via the executor as an agent would."""
+
+    @pytest.fixture
+    def xp_folder(self, tmp_path):
+        f = tmp_path / "xplane"
+        f.mkdir()
+        return f
+
+    @pytest.fixture
+    def paths(self, tmp_path):
+        import shutil
+        from pathlib import Path
+        p = sp_data.SlavePaths.under(tmp_path / "slave")
+        p.ensure()
+        src = Path(__file__).resolve().parents[2] / "simpit_control" \
+            / "scripts" / "disable_custom_scenery.sh"
+        dest = p.cascaded / "disable_custom_scenery.sh"
+        shutil.copy(src, dest)
+        import os; os.chmod(dest, 0o755)
+        return p
+
+    def _run(self, paths, xp_folder):
+        return sp_executor.execute(
+            paths, "disable_custom_scenery",
+            env_overrides={"XPLANE_FOLDER": str(xp_folder)},
+        )
+
+    def test_enabled_and_default_present(self, paths, xp_folder):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()
+        (xp_folder / "Custom Scenery" / "marker.txt").write_text("user-stuff")
+        (xp_folder / "Custom Scenery DEFAULT").mkdir()
+        (xp_folder / "Custom Scenery DEFAULT" / "default_marker.txt").write_text("d")
+
+        result = self._run(paths, xp_folder)
+        assert result.exit_code == 0, result.stderr
+        # User content preserved as DISABLED
+        assert (xp_folder / "Custom Scenery DISABLED" / "marker.txt").read_text() \
+            == "user-stuff"
+        # DEFAULT promoted to active
+        assert (xp_folder / "Custom Scenery" / "default_marker.txt").exists()
+        # DEFAULT consumed
+        assert not (xp_folder / "Custom Scenery DEFAULT").exists()
+
+    def test_enabled_present_default_missing(self, paths, xp_folder):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()
+        (xp_folder / "Custom Scenery" / "marker.txt").write_text("x")
+
+        result = self._run(paths, xp_folder)
+        assert result.exit_code == 0, result.stderr
+        assert (xp_folder / "Custom Scenery DISABLED" / "marker.txt").exists()
+        # New empty Custom Scenery in place
+        assert (xp_folder / "Custom Scenery").is_dir()
+        assert list((xp_folder / "Custom Scenery").iterdir()) == []
+        assert not (xp_folder / "Custom Scenery DEFAULT").exists()
+
+    def test_enabled_missing_errors(self, paths, xp_folder):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        result = self._run(paths, xp_folder)
+        assert result.exit_code != 0
+        assert "not found" in result.stderr.lower() \
+            or "cannot disable" in result.stderr.lower()
+
+    def test_disabled_already_exists_refuses(self, paths, xp_folder):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        (xp_folder / "Custom Scenery").mkdir()
+        (xp_folder / "Custom Scenery DISABLED").mkdir()
+        result = self._run(paths, xp_folder)
+        assert result.exit_code != 0
+        assert "already exists" in result.stderr.lower()
+
+    def test_xplane_folder_unset_errors(self, paths, tmp_path):
+        if EXT != ".sh":
+            pytest.skip(".sh-only end-to-end")
+        # Run with XPLANE_FOLDER explicitly empty (executor whitelists env)
+        result = sp_executor.execute(
+            paths, "disable_custom_scenery",
+            env_overrides={"XPLANE_FOLDER": ""},
+        )
+        assert result.exit_code != 0
+        assert "not set" in result.stderr.lower()

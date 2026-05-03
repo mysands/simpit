@@ -59,6 +59,32 @@ class TestScriptDef:
             assert "import sys" in defn.content_bat, \
                 f"{name} content_bat should be Python"
 
+    # ── backup_xplane / restore_xplane (cross-platform .py) ─────────────────
+    def test_backup_xplane_present(self):
+        assert "backup_xplane" in sp_registry.REGISTRY_BY_NAME
+
+    def test_restore_xplane_present(self):
+        assert "restore_xplane" in sp_registry.REGISTRY_BY_NAME
+
+    def test_backup_xplane_uses_python_content(self):
+        defn = sp_registry.REGISTRY_BY_NAME["backup_xplane"]
+        assert "import zipfile" in defn.content_bat \
+            and "import tarfile" in defn.content_bat, \
+            "backup_xplane content should be the cross-platform .py"
+
+    def test_restore_xplane_uses_python_content(self):
+        defn = sp_registry.REGISTRY_BY_NAME["restore_xplane"]
+        assert "import zipfile" in defn.content_bat \
+            and "import tarfile" in defn.content_bat, \
+            "restore_xplane content should be the cross-platform .py"
+
+    def test_backup_xplane_does_not_need_admin(self):
+        """User-level write to BACKUP_FOLDER and read from XPLANE_FOLDER —
+        no admin required, and we explicitly avoid asking for it so the
+        prompt-free path stays available."""
+        assert not sp_registry.REGISTRY_BY_NAME["backup_xplane"].needs_admin
+        assert not sp_registry.REGISTRY_BY_NAME["restore_xplane"].needs_admin
+
 
 # ── seed_registry ─────────────────────────────────────────────────────────────
 class TestSeedRegistry:

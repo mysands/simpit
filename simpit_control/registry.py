@@ -140,6 +140,36 @@ REGISTRY: list[ScriptDef] = [
         content_bat = _load("restore_xplane_updates.py"),
         content_sh  = "",
     ),
+    ScriptDef(
+        # Backs up XPLANE_FOLDER (everything except Custom Scenery)
+        # to BACKUP_FOLDER. Filenames embed hostname so several
+        # slaves can share one BACKUP_FOLDER without collisions.
+        # After writing, prunes to the newest BACKUP_KEEP archives
+        # (default 2) for THIS host only — never another slave's.
+        # Cross-platform .py for the same reason as block/restore
+        # update scripts: zipfile/tarfile in stdlib makes one source
+        # cleaner than two shell dialects.
+        name        = "Backup X-Plane",
+        script_name = "backup_xplane",
+        cascade     = True,
+        needs_admin = False,
+        state_probe = None,
+        content_bat = _load("backup_xplane.py"),
+        content_sh  = "",
+    ),
+    ScriptDef(
+        # Symmetric inverse of backup_xplane: extracts the newest
+        # archive for this host (or BACKUP_FILE if specified) and
+        # overwrites in place. Custom Scenery is left alone. Refuses
+        # to run if SIM_EXE_NAME is currently a running process.
+        name        = "Restore X-Plane",
+        script_name = "restore_xplane",
+        cascade     = True,
+        needs_admin = False,
+        state_probe = None,
+        content_bat = _load("restore_xplane.py"),
+        content_sh  = "",
+    ),
 ]
 
 REGISTRY_BY_NAME: dict[str, ScriptDef] = {s.script_name: s for s in REGISTRY}

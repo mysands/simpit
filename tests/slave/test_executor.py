@@ -397,3 +397,322 @@ class TestEnableCustomSceneryScript:
         # Custom Scenery is the empty/DEFAULT again
         assert (xp_folder / "Custom Scenery").is_dir()
         assert list((xp_folder / "Custom Scenery").iterdir()) == []
+
+
+# ── backup_xplane / restore_xplane (cross-platform .py) ──────────────────────
+class TestBackupXplaneScript:
+    """End-to-end via the real executor. backup_xplane.py is .py so it
+    runs in-process via runpy on both platforms."""
+
+    @pytest.fixture
+    def xp_folder(self, tmp_path):
+        """A fake X-Plane install with Aircraft, Output, plugins, plus
+        a Custom Scenery subtree we expect to be excluded."""
+        f = tmp_path / "xplane"; f.mkdir()
+        (f / "Aircraft" / "DA40").mkdir(parents=True)
+        (f / "Aircraft" / "DA40" / "DA40.acf").write_text("aircraft v1")
+        (f / "Output" / "preferences").mkdir(parents=True)
+        (f / "Output" / "preferences" / "X-Plane.prf").write_text("settings v1")
+        (f / "Resources" / "plugins").mkdir(parents=True)
+        (f / "Resources" / "plugins" / "FlyWithLua.xpl").write_text("plugin v1")
+        # The intentionally-excluded big folder
+        (f / "Custom Scenery" / "KBED").mkdir(parents=True)
+        (f / "Custom Scenery" / "KBED" / "huge.dsf").write_text("X" * 10_000)
+        (f / "X-Plane.exe").write_text("v12")
+        return f
+
+    @pytest.fixture
+    def backup_dir(self, tmp_path):
+        f = tmp_path / "backups"; f.mkdir()
+        return f
+
+    @pytest.fixture
+    def paths(self, tmp_path):
+        import shutil
+        from pathlib import Path
+        p = sp_data.SlavePaths.under(tmp_path / "slave"); p.ensure()
+        scripts = Path(__file__).resolve().parents[2] / "simpit_control" / "scripts"
+        for name in ("backup_xplane.py", "restore_xplane.py"):
+            shutil.copy(scripts / name, p.cascaded / name)
+        return p
+
+    @staticmethod
+    def _list_archive(path):
+        """Return sorted list of member names in a .zip or .tar.gz."""
+        import zipfile, tarfile
+        if path.suffix == ".zip":
+            with zipfile.ZipFile(path) as zf:
+                return sorted(n for n in zf.namelist()
+                              if not n.endswith("/"))
+        with tarfile.open(path, "r:*") as tf:
+            return sorted(m.name for m in tf.getmembers() if m.isfile())
+
+    @staticmethod
+    def _archives(backup_dir, host_glob="*"):
+        out = []
+        for ext in (".zip", ".tar.gz"):
+            out.extend(backup_dir.glob(f"xplane-{host_glob}-*{ext}"))
+        return sorted(out)
+
+    def _run(self, paths, name, env):
+        return sp_executor.execute(paths, name, env_overrides=env)
+
+    # ── backup behavior ────────────────────────────────────────────────
+    def test_creates_archive_with_hostname_in_name(self, paths, xp_folder, backup_dir):
+        import socket
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code == 0, r.stderr
+        archives = self._archives(backup_dir)
+        assert len(archives) == 1
+        # Hostname is embedded; same gethostname() is used inside the script
+        assert socket.gethostname() in archives[0].name \
+            or "unknown" in archives[0].name  # hostnames with bad chars
+
+    def test_excludes_custom_scenery(self, paths, xp_folder, backup_dir):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code == 0
+        members = self._list_archive(self._archives(backup_dir)[0])
+        # Custom Scenery must NOT appear at any depth in the archive
+        assert not any("Custom Scenery" in m for m in members), \
+            f"Custom Scenery should be excluded; found: " \
+            f"{[m for m in members if 'Custom Scenery' in m]}"
+        # Other content WAS captured
+        assert any("DA40.acf" in m for m in members)
+        assert any("X-Plane.prf" in m for m in members)
+
+    def test_filename_has_iso_date_stamp(self, paths, xp_folder, backup_dir):
+        import re
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        self._run(paths, "backup_xplane", env)
+        archives = self._archives(backup_dir)
+        # YYYY-MM-DD_HHMMSS somewhere in the name
+        assert re.search(r"\d{4}-\d{2}-\d{2}_\d{6}", archives[0].name), \
+            f"date stamp missing from {archives[0].name}"
+
+    # ── prune behavior ─────────────────────────────────────────────────
+    def test_prune_keeps_default_two(self, paths, xp_folder, backup_dir):
+        import time
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        for _ in range(3):
+            r = self._run(paths, "backup_xplane", env)
+            assert r.exit_code == 0
+            time.sleep(1.05)  # ensure distinct mtime / filename stamp
+        archives = self._archives(backup_dir)
+        assert len(archives) == 2, \
+            f"default keep=2 should have pruned to 2, got {len(archives)}"
+
+    def test_prune_keep_overridable(self, paths, xp_folder, backup_dir):
+        import time
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir),
+               "BACKUP_KEEP": "4"}
+        for _ in range(5):
+            r = self._run(paths, "backup_xplane", env)
+            assert r.exit_code == 0
+            time.sleep(1.05)
+        archives = self._archives(backup_dir)
+        assert len(archives) == 4, \
+            f"BACKUP_KEEP=4 should have pruned to 4, got {len(archives)}"
+
+    def test_prune_does_not_touch_other_hosts_archives(
+        self, paths, xp_folder, backup_dir
+    ):
+        """Critical isolation guarantee: when several slaves share one
+        BACKUP_FOLDER, each slave's prune step must only ever delete
+        files matching its own hostname pattern."""
+        import time, os, shutil
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        # Seed two backups for THIS host
+        self._run(paths, "backup_xplane", env)
+        time.sleep(1.05)
+        self._run(paths, "backup_xplane", env)
+        # Drop two archives that look like they came from a different
+        # slave. They use a hostname that this script cannot produce.
+        own = self._archives(backup_dir)[0]
+        # Path.suffix on foo.tar.gz returns '.gz' — use the full tail
+        ext = ".tar.gz" if own.name.endswith(".tar.gz") else own.suffix
+        other_old = backup_dir / f"xplane-CENTERLEFT-2025-01-01_120000{ext}"
+        other_new = backup_dir / f"xplane-CENTERLEFT-2025-12-31_235959{ext}"
+        shutil.copy(own, other_old)
+        shutil.copy(own, other_new)
+        # Make them genuinely older than this host's
+        old_t = time.time() - 86400 * 30
+        os.utime(other_old, (old_t, old_t))
+        os.utime(other_new, (old_t + 1, old_t + 1))
+
+        # Run another backup → triggers prune of THIS host only
+        time.sleep(1.05)
+        self._run(paths, "backup_xplane", env)
+
+        remaining = {p.name for p in self._archives(backup_dir)}
+        assert other_old.name in remaining, \
+            "prune wrongly deleted another slave's older backup"
+        assert other_new.name in remaining, \
+            "prune wrongly deleted another slave's newer backup"
+
+    # ── error handling ─────────────────────────────────────────────────
+    def test_missing_xplane_folder_errors(self, paths, backup_dir):
+        env = {"XPLANE_FOLDER": "", "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code != 0
+        assert "XPLANE_FOLDER" in r.stderr
+
+    def test_missing_backup_folder_errors(self, paths, xp_folder):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": ""}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code != 0
+        assert "BACKUP_FOLDER" in r.stderr
+
+    def test_bad_keep_value_errors(self, paths, xp_folder, backup_dir):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir),
+               "BACKUP_KEEP": "not_a_number"}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code != 0
+        assert "BACKUP_KEEP" in r.stderr
+
+    def test_creates_backup_folder_if_missing(self, paths, xp_folder, tmp_path):
+        new_dst = tmp_path / "new" / "nested" / "backups"
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(new_dst)}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code == 0, r.stderr
+        assert new_dst.is_dir()
+        assert len(self._archives(new_dst)) == 1
+
+
+class TestRestoreXplaneScript:
+    """Restore is the symmetric inverse: extract + overwrite, leave
+    Custom Scenery alone, leave non-archived files alone."""
+
+    # Re-use the same fixtures as backup tests
+    xp_folder = TestBackupXplaneScript.xp_folder
+    backup_dir = TestBackupXplaneScript.backup_dir
+    paths = TestBackupXplaneScript.paths
+
+    def _run(self, paths, name, env):
+        return sp_executor.execute(paths, name, env_overrides=env)
+
+    def _seed_backup(self, paths, xp_folder, backup_dir):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "backup_xplane", env)
+        assert r.exit_code == 0, r.stderr
+        return env
+
+    def test_restore_overwrites_archived_files(self, paths, xp_folder, backup_dir):
+        env = self._seed_backup(paths, xp_folder, backup_dir)
+        # Modify after backup
+        (xp_folder / "Aircraft" / "DA40" / "DA40.acf").write_text("CORRUPTED")
+        (xp_folder / "Output" / "preferences" / "X-Plane.prf").write_text("CORRUPTED")
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code == 0, r.stderr
+        # Originals restored
+        assert (xp_folder / "Aircraft" / "DA40" / "DA40.acf") \
+            .read_text() == "aircraft v1"
+        assert (xp_folder / "Output" / "preferences" / "X-Plane.prf") \
+            .read_text() == "settings v1"
+
+    def test_restore_leaves_non_archived_files_alone(
+        self, paths, xp_folder, backup_dir
+    ):
+        env = self._seed_backup(paths, xp_folder, backup_dir)
+        # Add a new file post-backup. Restore is "overwrite," not "wipe."
+        new_file = xp_folder / "Output" / "user_added_post_backup.txt"
+        new_file.write_text("must survive")
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code == 0
+        assert new_file.read_text() == "must survive"
+
+    def test_restore_leaves_custom_scenery_alone(
+        self, paths, xp_folder, backup_dir
+    ):
+        env = self._seed_backup(paths, xp_folder, backup_dir)
+        # Modify Custom Scenery — the live install
+        marker = xp_folder / "Custom Scenery" / "KBED" / "live_edit.txt"
+        marker.write_text("scenery edit post-backup")
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code == 0
+        assert marker.read_text() == "scenery edit post-backup"
+        # Original scenery file also untouched
+        assert (xp_folder / "Custom Scenery" / "KBED" / "huge.dsf").exists()
+
+    def test_restore_picks_newest_when_multiple(
+        self, paths, xp_folder, backup_dir
+    ):
+        import time
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        # Backup #1 with content "v1"
+        self._run(paths, "backup_xplane", env)
+        time.sleep(1.05)
+        # Modify, then backup #2 with new content
+        (xp_folder / "Aircraft" / "DA40" / "DA40.acf").write_text("aircraft V2")
+        self._run(paths, "backup_xplane", env)
+        # Now scribble — restore should pull V2 (the newer one)
+        (xp_folder / "Aircraft" / "DA40" / "DA40.acf").write_text("scribble")
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code == 0
+        assert (xp_folder / "Aircraft" / "DA40" / "DA40.acf") \
+            .read_text() == "aircraft V2", "should restore newest backup"
+
+    def test_restore_explicit_backup_file(self, paths, xp_folder, backup_dir):
+        import time
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        # Seed two backups
+        self._run(paths, "backup_xplane", env)
+        time.sleep(1.05)
+        # Find the first archive's name before we make a second
+        first_name = sorted(p.name for p in TestBackupXplaneScript._archives(backup_dir))[0]
+        (xp_folder / "Aircraft" / "DA40" / "DA40.acf").write_text("aircraft V2")
+        self._run(paths, "backup_xplane", env)
+        # Scribble, then ask for the OLDER one explicitly
+        (xp_folder / "Aircraft" / "DA40" / "DA40.acf").write_text("scribble")
+        env_with_pick = dict(env, BACKUP_FILE=first_name)
+        r = self._run(paths, "restore_xplane", env_with_pick)
+        assert r.exit_code == 0
+        # The first backup contained "aircraft v1"
+        assert (xp_folder / "Aircraft" / "DA40" / "DA40.acf") \
+            .read_text() == "aircraft v1"
+
+    def test_restore_no_archives_errors(self, paths, xp_folder, backup_dir):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code != 0
+        assert "no archives" in r.stderr.lower() or "not found" in r.stderr.lower()
+
+    def test_restore_rejects_path_traversal_in_explicit_filename(
+        self, paths, xp_folder, backup_dir
+    ):
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir),
+               "BACKUP_FILE": "../escape.zip"}
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code != 0
+
+    def test_restore_unsafe_archive_members_skipped(
+        self, paths, xp_folder, backup_dir
+    ):
+        """Hand-roll an archive containing ../escaping members — the
+        restore script should skip them and still succeed on safe ones."""
+        import tarfile, io, socket
+        # Build a tar in BACKUP_FOLDER matching the host's prefix
+        host = socket.gethostname() or "unknown"
+        # sanitize same way the script does
+        bad = '<>:"/\\|?*\x00'
+        host = "".join("_" if c in bad else c for c in host).strip(". ") or "unknown"
+        tar_path = backup_dir / f"xplane-{host}-2026-05-03_120000.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            # Safe member
+            data = b"safe content"
+            info = tarfile.TarInfo(name="Output/safe.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+            # Unsafe member — should be skipped
+            info2 = tarfile.TarInfo(name="../../../escape.txt")
+            info2.size = len(data)
+            tf.addfile(info2, io.BytesIO(data))
+        env = {"XPLANE_FOLDER": str(xp_folder), "BACKUP_FOLDER": str(backup_dir)}
+        r = self._run(paths, "restore_xplane", env)
+        assert r.exit_code == 0
+        # The safe one landed where expected
+        assert (xp_folder / "Output" / "safe.txt").read_text() == "safe content"
+        # The unsafe one didn't escape
+        escape = backup_dir.parent.parent / "escape.txt"
+        assert not escape.exists(), "path-traversal member should have been skipped"

@@ -76,3 +76,8 @@ desktop.ini
 # ── PyInstaller ────────────────────────────────────────────────────────
 *.manifest
 *.spec
+# But keep our committed PyInstaller specs — they encode the canonical
+# build flags (collect-submodules, add-data, icon, --noconsole) so
+# every build is reproducible.
+!simpit-control.spec
+!simpit-slave.spec

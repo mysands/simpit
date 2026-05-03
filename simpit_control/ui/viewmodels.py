@@ -153,37 +153,33 @@ class BatFileRowVM:
             per_slave_label[sid] = ""
 
         if paired is not None:
-            # The toggle decision is "which action does THIS slave
-            # need right now?" answered by its probe value. We use
-            # whichever bat's probe says it's appropriate to run.
+            # Convention (post-spec-clarification): each half's probe
+            # answers the question "is MY action available right
+            # now?" — value "present" means yes, "absent" means the
+            # other half is the one to run.
             #
-            # Rule: a toggle script is "appropriate" when the world
-            # is currently in a state that the script would change.
-            # For enable_custom_scenery (probe path: Custom Scenery
-            # DISABLED, expects to clear it) the script is appropriate
-            # when DISABLED is present. For disable_custom_scenery
-            # the script is appropriate when DISABLED is absent.
-            #
-            # We don't try to encode that semantic here — instead we
-            # rely on the convention that each half's probe reports
-            # "absent" when *this* half is the one to run, and
-            # "present" when the *paired* half is the one to run.
-            # That holds for the scenery pair as configured and is
-            # the simplest contract for future toggle pairs.
+            # Per-slave decision: look up *each* half's probe value
+            # for this slave. Show whichever half says "present."
+            # If both say "absent" (or both missing — slave hasn't
+            # reported yet), fall back to the primary with a blank
+            # label so the widget renders ▶ rather than something
+            # misleading.
+            paired_probes = probe_results_by_slave  # alias for readability
             for sid in slave_ids_targeted:
-                this_probe = probe_results_by_slave.get(sid, {}).get(bat.id, "")
-                if this_probe == "present":
-                    # Paired half is the one to run for this slave.
-                    per_slave_id[sid]    = paired.id
-                    per_slave_label[sid] = paired.name
-                elif this_probe == "absent":
+                self_probe = paired_probes.get(sid, {}).get(bat.id, "")
+                other_probe = paired_probes.get(sid, {}).get(paired.id, "")
+                if self_probe == "present":
                     per_slave_id[sid]    = bat.id
                     per_slave_label[sid] = bat.name
+                elif other_probe == "present":
+                    per_slave_id[sid]    = paired.id
+                    per_slave_label[sid] = paired.name
                 else:
-                    # Probe hasn't run yet (slave offline, just
-                    # added, etc.). Default to this half — but show
-                    # an ambiguous '▶' so the user knows the toggle
-                    # state isn't known yet.
+                    # No probe data, or both halves report absent
+                    # (which would mean the world is in a state
+                    # neither script can act on — spec says this
+                    # shouldn't happen, but degrading to ▶ is
+                    # safer than guessing wrong).
                     per_slave_id[sid]    = bat.id
                     per_slave_label[sid] = ""
 
@@ -269,15 +265,15 @@ class DashboardVM:
                 paired_for[bat.id] = None
                 continue
             # Decide primary: count slaves where each half's probe is
-            # "absent" (i.e. its action is currently the appropriate
-            # one). Higher count wins; ties break by script_name.
-            def _appropriateness(b: sp_data.BatFile) -> int:
+            # "present" (i.e. its action is available right now).
+            # Higher count wins; ties break by script_name.
+            def _availability(b: sp_data.BatFile) -> int:
                 return sum(
                     1 for sid in all_slave_ids
-                    if probes_by_slave.get(sid, {}).get(b.id) == "absent"
+                    if probes_by_slave.get(sid, {}).get(b.id) == "present"
                 )
-            score_self  = _appropriateness(bat)
-            score_other = _appropriateness(other)
+            score_self  = _availability(bat)
+            score_other = _availability(other)
             if (score_other, other.script_name) > (score_self, bat.script_name):
                 primary, partner = other, bat
             else:

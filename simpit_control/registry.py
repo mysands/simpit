@@ -102,12 +102,15 @@ REGISTRY: list[ScriptDef] = [
         script_name = "enable_custom_scenery",
         cascade     = True,
         needs_admin = False,
+        # "Is enable's action available right now?" -> yes iff
+        # 'Custom Scenery DISABLED' exists (a snapshot exists to
+        # restore from). NOT inverted — present means "show this
+        # button," consistent with the convention used by the
+        # toggle-pair viewmodel.
         state_probe = {
             "type":   "folder_exists",
-            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
-                       "invert": True},
+            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
         },
-        # Toggle pair: see disable_custom_scenery for the inverse half.
         pair_with   = "disable_custom_scenery",
         content_bat = _load("enable_custom_scenery.bat"),
         content_sh  = _load("enable_custom_scenery.sh"),
@@ -117,11 +120,17 @@ REGISTRY: list[ScriptDef] = [
         script_name = "disable_custom_scenery",
         cascade     = True,
         needs_admin = False,
+        # "Is disable's action available right now?" -> yes iff
+        # 'Custom Scenery DISABLED' is *absent* (no snapshot yet,
+        # so this is the action that creates one). User invariant:
+        # 'Custom Scenery' itself is always present, so we don't
+        # need to check it separately. The disable script auto-
+        # creates 'Custom Scenery DEFAULT' if it's missing.
         state_probe = {
             "type":   "folder_exists",
-            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
+            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
+                       "invert": True},
         },
-        # Toggle pair: see enable_custom_scenery for the inverse half.
         pair_with   = "enable_custom_scenery",
         content_bat = _load("disable_custom_scenery.bat"),
         content_sh  = _load("disable_custom_scenery.sh"),

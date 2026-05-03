@@ -165,9 +165,17 @@ class TestToggleRowPairing:
     def _make_store_with_pair(self, tmp_path, slaves: list[tuple[str, str]]):
         """Helper: Store with two paired bats and the given slaves.
 
-        The pair mimics the scenery toggle: both halves share a probe
-        path (``Custom Scenery DISABLED``) but use ``invert`` so each
-        half's probe answers 'is my effect in place?' independently.
+        The pair mimics the scenery toggle. Convention: each half's
+        probe answers 'is MY action available right now?' so the
+        viewmodel just shows whichever half says "present."
+
+          - disable's probe: invert=True on 'Custom Scenery DISABLED'
+            -> "present" when DISABLED is *missing* (no snapshot yet,
+            so disable is the action that creates one).
+          - enable's probe: no invert on the same path
+            -> "present" when DISABLED *exists* (a snapshot exists
+            to restore from).
+
         Returns (store, disable_id, enable_id, slave_ids).
         """
         store = sp_data.Store(sp_data.ControlPaths.under(tmp_path))
@@ -175,28 +183,29 @@ class TestToggleRowPairing:
         for name, host in slaves:
             slave_ids.append(store.add_slave(name=name, host=host).id)
 
-        # Same path, different invert — mirrors registry.
-        probe_no_invert = {
-            "type": "folder_exists",
-            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
-        }
-        probe_inverted = {
+        # Mirrors registry exactly: enable checks DISABLED present,
+        # disable checks DISABLED absent (via invert).
+        probe_disable = {
             "type": "folder_exists",
             "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
                        "invert": True},
+        }
+        probe_enable = {
+            "type": "folder_exists",
+            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
         }
         disable = store.add_batfile(
             name="Disable Custom Scenery",
             script_name="disable_custom_scenery",
             cascade=True, content="...",
-            state_probe=probe_no_invert,
+            state_probe=probe_disable,
             pair_with="enable_custom_scenery",
         )
         enable = store.add_batfile(
             name="Enable Custom Scenery",
             script_name="enable_custom_scenery",
             cascade=True, content="...",
-            state_probe=probe_inverted,
+            state_probe=probe_enable,
             pair_with="disable_custom_scenery",
         )
         return store, disable.id, enable.id, slave_ids
@@ -213,10 +222,12 @@ class TestToggleRowPairing:
         """Two paired bats produce ONE row in the dashboard, not two."""
         store, disable_id, enable_id, [s1] = self._make_store_with_pair(
             tmp_path, [("CENTERLEFT", "10.0.0.5")])
-        # Probe for both halves — scenery currently enabled (DISABLED absent)
+        # Probe for both halves — scenery currently enabled (DISABLED absent).
+        # Under the new convention: each half says "present" iff its
+        # action is available. Scenery enabled → disable available.
         statuses = {s1: self._status(s1, {
-            disable_id: "absent",   # disable's effect not in place
-            enable_id:  "present",  # enable's effect IS in place (inverted probe)
+            disable_id: "present",  # disable's action IS available
+            enable_id:  "absent",   # enable's action NOT available (no snapshot)
         })}
         dash = vm.DashboardVM.build(store, statuses, has_key=True)
         assert len(dash.batfiles) == 1, \
@@ -240,9 +251,9 @@ class TestToggleRowPairing:
         store, disable_id, enable_id, [s1] = self._make_store_with_pair(
             tmp_path, [("CENTERLEFT", "10.0.0.5")])
         statuses = {s1: self._status(s1, {
-            # disable's effect not in place: action available is "Disable"
-            disable_id: "absent",
-            enable_id:  "present",
+            # Scenery enabled: disable's action is available, enable's isn't
+            disable_id: "present",
+            enable_id:  "absent",
         })}
         dash = vm.DashboardVM.build(store, statuses, has_key=True)
         row = dash.batfiles[0]
@@ -254,8 +265,9 @@ class TestToggleRowPairing:
         store, disable_id, enable_id, [s1] = self._make_store_with_pair(
             tmp_path, [("CENTERLEFT", "10.0.0.5")])
         statuses = {s1: self._status(s1, {
-            disable_id: "present",  # disable's effect IS in place
-            enable_id:  "absent",   # enable's effect not in place
+            # Scenery disabled: enable's action available, disable's isn't
+            disable_id: "absent",
+            enable_id:  "present",
         })}
         dash = vm.DashboardVM.build(store, statuses, has_key=True)
         row = dash.batfiles[0]
@@ -268,10 +280,10 @@ class TestToggleRowPairing:
         store, disable_id, enable_id, [s1, s2] = self._make_store_with_pair(
             tmp_path, [("CENTERLEFT", "10.0.0.5"), ("RIGHT", "10.0.0.6")])
         statuses = {
-            # s1: scenery on (need Disable)
-            s1: self._status(s1, {disable_id: "absent",  enable_id: "present"}),
-            # s2: scenery off (need Enable)
-            s2: self._status(s2, {disable_id: "present", enable_id: "absent"}),
+            # s1: scenery on (need Disable -> disable's action available)
+            s1: self._status(s1, {disable_id: "present", enable_id: "absent"}),
+            # s2: scenery off (need Enable -> enable's action available)
+            s2: self._status(s2, {disable_id: "absent",  enable_id: "present"}),
         }
         dash = vm.DashboardVM.build(store, statuses, has_key=True)
         row = dash.batfiles[0]

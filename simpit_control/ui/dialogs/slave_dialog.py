@@ -71,6 +71,27 @@ class SlaveDialog(tk.Toplevel):
         self._field("SIM_EXE_NAME   (e.g. X-Plane.exe)",
                     self.var_sim_exe)
 
+        # ── Backup configuration ─────────────────────────────────────────────
+        # Two fields kept optional: a slave that has no BACKUP_FOLDER set
+        # simply can't run backup_xplane / restore_xplane, which is fine —
+        # those scripts are opt-in and not every slave needs to back up.
+        tk.Label(self, text="BACKUP CONFIGURATION (OPTIONAL)",
+                 font=theme.FONT_HEADING, bg=theme.BG, fg=theme.ACCENT,
+                 ).pack(anchor="w", padx=20, pady=(16, 4))
+
+        self.var_backup_folder = tk.StringVar(
+            value=existing_env.get("BACKUP_FOLDER", ""))
+        # BACKUP_KEEP defaults to 2 inside the script when absent. We
+        # leave the field blank by default so the script's default is
+        # what most slaves get — only filled in if you want to override.
+        self.var_backup_keep = tk.StringVar(
+            value=existing_env.get("BACKUP_KEEP", ""))
+
+        self._field("BACKUP_FOLDER  (e.g. \\\\NAS\\backups\\simpit)",
+                    self.var_backup_folder)
+        self._field("BACKUP_KEEP    (number of archives to retain; blank = 2)",
+                    self.var_backup_keep)
+
         # Buttons
         btns = tk.Frame(self, bg=theme.BG)
         btns.pack(fill="x", padx=20, pady=(16, 12), side="bottom")
@@ -91,10 +112,19 @@ class SlaveDialog(tk.Toplevel):
                  ).pack(fill="x", padx=20, ipady=theme.TOUCH_PADY)
 
     def _build_env(self) -> dict[str, str]:
-        """Build env dict from the hardwired fields."""
+        """Build env dict from the hardwired fields.
+
+        Empty fields are dropped — absent env keys mean "use the
+        script's default behavior" rather than "set the value to
+        empty string," which would propagate to the slave and likely
+        confuse the script's own preflight checks.
+        """
         env = {}
         xplane_folder = self.var_xplane_folder.get().strip()
         sim_exe = self.var_sim_exe.get().strip()
+        backup_folder = self.var_backup_folder.get().strip()
+        backup_keep = self.var_backup_keep.get().strip()
+
         if xplane_folder:
             # Ensure trailing backslash on Windows paths
             if xplane_folder and not xplane_folder.endswith(("\\", "/")):
@@ -102,6 +132,25 @@ class SlaveDialog(tk.Toplevel):
             env["XPLANE_FOLDER"] = xplane_folder
         if sim_exe:
             env["SIM_EXE_NAME"] = sim_exe
+        if backup_folder:
+            # Don't auto-append a trailing slash here — UNC paths in
+            # particular work fine without one and adding it can
+            # produce ugly double-slashes downstream.
+            env["BACKUP_FOLDER"] = backup_folder
+        if backup_keep:
+            # Validate at the dialog layer so the user gets immediate
+            # feedback rather than a script failure on the slave.
+            try:
+                n = int(backup_keep)
+            except ValueError as exc:
+                raise ValueError(
+                    f"BACKUP_KEEP must be an integer, got {backup_keep!r}"
+                ) from exc
+            if n < 1:
+                raise ValueError(
+                    f"BACKUP_KEEP must be >= 1, got {n}"
+                )
+            env["BACKUP_KEEP"] = str(n)
         return env
 
     def _save(self) -> None:
@@ -112,7 +161,11 @@ class SlaveDialog(tk.Toplevel):
             messagebox.showerror("Invalid port", "Ports must be integers.",
                                   parent=self)
             return
-        env = self._build_env()
+        try:
+            env = self._build_env()
+        except ValueError as exc:
+            messagebox.showerror("Invalid input", str(exc), parent=self)
+            return
         try:
             if self.existing is None:
                 slave = self.controller.add_slave(

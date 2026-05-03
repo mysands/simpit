@@ -18,6 +18,12 @@ Non-responsibilities:
 Entry point: ``python -m simpit_slave``  (see :mod:`simpit_slave.__main__`).
 """
 from . import agent, data, executor, inspector
+# Importing _bundle_hints here is intentional — it has no runtime
+# effect, but it makes a list of stdlib modules visible to
+# PyInstaller's static analysis so cascaded user scripts can import
+# them without needing per-script --hidden-import flags. See the
+# module's docstring for the full rationale.
+from . import _bundle_hints  # noqa: F401
 
 __version__ = "0.1.0"
 

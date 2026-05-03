@@ -163,6 +163,14 @@ class BatFile:
     target_slaves:  list[str] | None = None
     needs_admin:    bool = False
     state_probe:    dict | None = None
+    pair_with:      str | None = None
+    """Optional sibling ``script_name`` this script forms an
+    enable/disable pair with. Set on both halves of the pair pointing
+    at each other. The UI collapses paired entries into a single row
+    whose per-slave action depends on each slave's probe value, so a
+    user sees the toggle as one button that flips its label and
+    target script after each click. Has no effect at run-time —
+    paired scripts still execute and persist independently."""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -183,6 +191,7 @@ class BatFile:
             target_slaves = targets,
             needs_admin   = bool(d.get("needs_admin", False)),
             state_probe   = d.get("state_probe") if isinstance(d.get("state_probe"), dict) else None,
+            pair_with     = d.get("pair_with") if isinstance(d.get("pair_with"), str) else None,
         )
 
     def applies_to_slave(self, slave_id: str) -> bool:

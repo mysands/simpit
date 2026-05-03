@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 """block_xplane_updates.py — Add xplane.com to hosts to block update checks.
 Requires admin/root. Called by SimPit Control via EXEC_SCRIPT (needs_admin=True).
+
+Why no ``import platform``:
+    The slave is shipped as a PyInstaller bundle. PyInstaller's static
+    analysis only bundles stdlib modules the slave's own code imports.
+    Cascaded user scripts run in-process via ``runpy.run_path``, so
+    they share that bundle's import space — meaning anything the slave
+    doesn't already import is unavailable. The slave imports
+    ``simpit_common.platform`` but never stdlib ``platform``, so
+    ``import platform`` in this script would fail with
+    ``No module named 'platform'``. ``os.name`` answers the same
+    question and is already pulled in by the slave.
 """
+import os
 import sys
-import platform
 
 BLOCK_MARKER = "# simpit: block xplane updates"
 BLOCK_ENTRIES = [
@@ -12,8 +23,7 @@ BLOCK_ENTRIES = [
 ]
 
 def hosts_path():
-    if platform.system() == "Windows":
-        import os
+    if os.name == "nt":
         return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                             "System32", "drivers", "etc", "hosts")
     return "/etc/hosts"

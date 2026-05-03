@@ -82,6 +82,17 @@ class BatFileRowVM:
     Carries enough information for the widget to render with no data
     layer access — including the per-slave status of this script's
     state probe (when one is configured).
+
+    Toggle-pair semantics (e.g. enable/disable scenery)
+    ---------------------------------------------------
+    A row that represents a paired script collapses both halves into
+    one visible entry. Per-slave maps (``batfile_id_per_slave``,
+    ``button_label_per_slave``) tell the widget *which* half to run
+    for each slave and what label to show on that slave's button.
+
+    When ``pair_with`` is not set, ``batfile_id`` and a per-slave
+    fallback (just the row's own id and a generic ▶ label) are used —
+    that's the default for every non-toggle script.
     """
     batfile_id:    str
     name:          str
@@ -93,29 +104,85 @@ class BatFileRowVM:
     probe_status_per_slave: dict[str, str]  # slave_id -> probe value
     """For each slave id this script targets, the latest probe value
     (e.g. 'present', 'running', 'absent'). Empty if no probe configured."""
+    batfile_id_per_slave:    dict[str, str]
+    """Which batfile id should run when the user clicks this slave's
+    button. For non-paired rows every slave maps to ``batfile_id``;
+    for paired rows the value flips per-slave based on probe state."""
+    button_label_per_slave:  dict[str, str]
+    """Per-slave display label for the run button (e.g. 'Disable',
+    'Enable', or empty string for the default ▶ glyph)."""
 
     @classmethod
     def build(cls,
               bat: sp_data.BatFile,
               slave_ids_targeted: list[str],
               probe_results_by_slave: dict[str, dict[str, str]],
+              paired: sp_data.BatFile | None = None,
               ) -> "BatFileRowVM":
         """Construct from a bat file + the targeted slave ids + probe map.
 
         ``probe_results_by_slave`` is the poller cache restructured as
         ``{slave_id: {probe_name: value}}``. Looking up
         ``probe_results_by_slave[s][bat.id]`` gives the value.
+
+        ``paired``, when supplied, is the inverse half of a toggle pair.
+        The caller is responsible for picking which half is the
+        "primary" — typically the one whose action is currently
+        applicable for the majority of slaves — and passing the other
+        half as ``paired``. Per-slave dispatch then reflects each
+        slave's individual probe value.
         """
         if bat.target_slaves is None:
             target_count = "all slaves"
         else:
             n = len(bat.target_slaves)
             target_count = f"{n} slave{'s' if n != 1 else ''}"
-        per_slave: dict[str, str] = {}
+        per_slave_probe: dict[str, str] = {}
         if bat.state_probe:
             for sid in slave_ids_targeted:
                 value = probe_results_by_slave.get(sid, {}).get(bat.id, "")
-                per_slave[sid] = value
+                per_slave_probe[sid] = value
+
+        # Per-slave dispatch + button label.
+        # The non-paired case is degenerate: every slave maps to this
+        # bat's own id, label stays blank (widget renders ▶).
+        per_slave_id:    dict[str, str] = {}
+        per_slave_label: dict[str, str] = {}
+        for sid in slave_ids_targeted:
+            per_slave_id[sid]    = bat.id
+            per_slave_label[sid] = ""
+
+        if paired is not None:
+            # Convention (post-spec-clarification): each half's probe
+            # answers the question "is MY action available right
+            # now?" — value "present" means yes, "absent" means the
+            # other half is the one to run.
+            #
+            # Per-slave decision: look up *each* half's probe value
+            # for this slave. Show whichever half says "present."
+            # If both say "absent" (or both missing — slave hasn't
+            # reported yet), fall back to the primary with a blank
+            # label so the widget renders ▶ rather than something
+            # misleading.
+            paired_probes = probe_results_by_slave  # alias for readability
+            for sid in slave_ids_targeted:
+                self_probe = paired_probes.get(sid, {}).get(bat.id, "")
+                other_probe = paired_probes.get(sid, {}).get(paired.id, "")
+                if self_probe == "present":
+                    per_slave_id[sid]    = bat.id
+                    per_slave_label[sid] = bat.name
+                elif other_probe == "present":
+                    per_slave_id[sid]    = paired.id
+                    per_slave_label[sid] = paired.name
+                else:
+                    # No probe data, or both halves report absent
+                    # (which would mean the world is in a state
+                    # neither script can act on — spec says this
+                    # shouldn't happen, but degrading to ▶ is
+                    # safer than guessing wrong).
+                    per_slave_id[sid]    = bat.id
+                    per_slave_label[sid] = ""
+
         return cls(
             batfile_id   = bat.id,
             name         = bat.name,
@@ -124,7 +191,9 @@ class BatFileRowVM:
             needs_admin  = bat.needs_admin,
             target_count = target_count,
             has_probe    = bool(bat.state_probe),
-            probe_status_per_slave = per_slave,
+            probe_status_per_slave = per_slave_probe,
+            batfile_id_per_slave   = per_slave_id,
+            button_label_per_slave = per_slave_label,
         )
 
 
@@ -168,15 +237,61 @@ class DashboardVM:
         probes_by_slave = {sid: st.probe_results
                            for sid, st in statuses.items()}
 
-        bat_rows = []
         all_slave_ids = [s.id for s in store.slaves()]
-        for bat in store.batfiles():
+        all_bats = list(store.batfiles())
+
+        # ── Collapse pair-linked bats into single rows ──
+        # When two bats reference each other via ``pair_with`` we render
+        # only one row whose per-slave button label/dispatch flips based
+        # on probe state. The "primary" half — the one whose name and
+        # probe are used for the row header — is chosen as whichever
+        # half has more slaves needing its action right now (i.e. probe
+        # value is "absent" / effect not yet in place). Ties break by
+        # script_name for stable ordering across rebuilds.
+        bats_by_script_name = {b.script_name: b for b in all_bats}
+        skip_ids: set[str] = set()
+        # Map each rendered bat to its paired half (or None).
+        paired_for: dict[str, sp_data.BatFile | None] = {}
+        for bat in all_bats:
+            if bat.id in skip_ids:
+                continue
+            other_name = bat.pair_with
+            if not other_name:
+                paired_for[bat.id] = None
+                continue
+            other = bats_by_script_name.get(other_name)
+            if other is None or other.id == bat.id:
+                # Dangling pair reference — render this one alone.
+                paired_for[bat.id] = None
+                continue
+            # Decide primary: count slaves where each half's probe is
+            # "present" (i.e. its action is available right now).
+            # Higher count wins; ties break by script_name.
+            def _availability(b: sp_data.BatFile) -> int:
+                return sum(
+                    1 for sid in all_slave_ids
+                    if probes_by_slave.get(sid, {}).get(b.id) == "present"
+                )
+            score_self  = _availability(bat)
+            score_other = _availability(other)
+            if (score_other, other.script_name) > (score_self, bat.script_name):
+                primary, partner = other, bat
+            else:
+                primary, partner = bat, other
+            paired_for[primary.id] = partner
+            skip_ids.add(partner.id)
+
+        bat_rows = []
+        for bat in all_bats:
+            if bat.id in skip_ids:
+                continue
             targeted = (all_slave_ids
                         if bat.target_slaves is None
                         else [sid for sid in bat.target_slaves
                               if sid in all_slave_ids])
             bat_rows.append(BatFileRowVM.build(
-                bat, targeted, probes_by_slave))
+                bat, targeted, probes_by_slave,
+                paired=paired_for.get(bat.id)))
 
         return cls(
             slaves   = slave_cards,

@@ -84,6 +84,11 @@ class ScriptDef:
     # ── Probe ───────────────────────────────────────────────────────────────
     state_probe:   dict | None = None
 
+    # ── Pairing (optional) ──────────────────────────────────────────────────
+    # Points at the inverse script's ``script_name``. Mirrored on the
+    # paired half. The UI collapses both rows into one toggle.
+    pair_with:     str | None = None
+
     # ── Script content (loaded from scripts/ at import time) ─────────────────
     content_bat:   str = ""
     content_sh:    str = ""
@@ -97,11 +102,16 @@ REGISTRY: list[ScriptDef] = [
         script_name = "enable_custom_scenery",
         cascade     = True,
         needs_admin = False,
+        # "Is enable's action available right now?" -> yes iff
+        # 'Custom Scenery DISABLED' exists (a snapshot exists to
+        # restore from). NOT inverted — present means "show this
+        # button," consistent with the convention used by the
+        # toggle-pair viewmodel.
         state_probe = {
             "type":   "folder_exists",
-            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
-                       "invert": True},
+            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
         },
+        pair_with   = "disable_custom_scenery",
         content_bat = _load("enable_custom_scenery.bat"),
         content_sh  = _load("enable_custom_scenery.sh"),
     ),
@@ -110,10 +120,18 @@ REGISTRY: list[ScriptDef] = [
         script_name = "disable_custom_scenery",
         cascade     = True,
         needs_admin = False,
+        # "Is disable's action available right now?" -> yes iff
+        # 'Custom Scenery DISABLED' is *absent* (no snapshot yet,
+        # so this is the action that creates one). User invariant:
+        # 'Custom Scenery' itself is always present, so we don't
+        # need to check it separately. The disable script auto-
+        # creates 'Custom Scenery DEFAULT' if it's missing.
         state_probe = {
             "type":   "folder_exists",
-            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
+            "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
+                       "invert": True},
         },
+        pair_with   = "enable_custom_scenery",
         content_bat = _load("disable_custom_scenery.bat"),
         content_sh  = _load("disable_custom_scenery.sh"),
     ),
@@ -138,6 +156,49 @@ REGISTRY: list[ScriptDef] = [
         needs_admin = True,
         state_probe = None,
         content_bat = _load("restore_xplane_updates.py"),
+        content_sh  = "",
+    ),
+    ScriptDef(
+<<<<<<< HEAD
+        # Backs up XPLANE_FOLDER (everything except Custom Scenery)
+        # to BACKUP_FOLDER. Filenames embed hostname so several
+        # slaves can share one BACKUP_FOLDER without collisions.
+        # After writing, prunes to the newest BACKUP_KEEP archives
+        # (default 2) for THIS host only — never another slave's.
+        # Cross-platform .py for the same reason as block/restore
+        # update scripts: zipfile/tarfile in stdlib makes one source
+        # cleaner than two shell dialects.
+        name        = "Backup X-Plane",
+        script_name = "backup_xplane",
+        cascade     = True,
+        needs_admin = False,
+        state_probe = None,
+        content_bat = _load("backup_xplane.py"),
+        content_sh  = "",
+    ),
+    ScriptDef(
+        # Symmetric inverse of backup_xplane: extracts the newest
+        # archive for this host (or BACKUP_FILE if specified) and
+        # overwrites in place. Custom Scenery is left alone. Refuses
+        # to run if SIM_EXE_NAME is currently a running process.
+        name        = "Restore X-Plane",
+        script_name = "restore_xplane",
+        cascade     = True,
+        needs_admin = False,
+        state_probe = None,
+        content_bat = _load("restore_xplane.py"),
+=======
+        name        = "Quit X-Plane",
+        script_name = "quit_xplane",
+        cascade     = True,
+        needs_admin = False,
+        # No probe: quit is fire-and-forget UDP. Whether X-Plane is
+        # actually still running after the packet is best surfaced by
+        # the launch_xplane probe (process_running on SIM_EXE_NAME).
+        state_probe = None,
+        # .py handles both platforms — stored in content_bat by convention
+        content_bat = _load("quit_xplane.py"),
+>>>>>>> feat(scripts): add quit_xplane script
         content_sh  = "",
     ),
 ]
@@ -167,6 +228,7 @@ def seed_registry(store: "sp_data.Store") -> int:
             target_slaves= defn.target_slaves,
             needs_admin  = defn.needs_admin,
             state_probe  = defn.state_probe,
+            pair_with    = defn.pair_with,
         )
         log.info("registry: seeded %s", defn.script_name)
         added += 1

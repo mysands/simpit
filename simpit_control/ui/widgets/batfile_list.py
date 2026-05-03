@@ -139,16 +139,23 @@ class BatFileListWidget(tk.Frame):
                              bg=theme.PANEL, fg=color, padx=2,
                              ).pack(side="left")
 
-                # Run button (disabled if slave offline)
+                # Run button (disabled if slave offline). For toggle
+                # pairs the label and target script flip per slave
+                # based on its probe value — the row VM precomputes
+                # both maps so the widget stays dumb.
                 disabled = slave.is_offline
+                btn_label = row.button_label_per_slave.get(slave.slave_id, "")
+                btn_text  = btn_label if btn_label else "▶"
+                target_id = row.batfile_id_per_slave.get(slave.slave_id,
+                                                          row.batfile_id)
                 btn = tk.Button(
-                    cell, text="▶", font=theme.FONT_TINY,
+                    cell, text=btn_text, font=theme.FONT_TINY,
                     bg=theme.BTN_BG if not disabled else theme.GREY,
                     fg=theme.TEXT, relief="flat", bd=0,
                     cursor="hand2" if not disabled else "arrow",
                     padx=6, pady=2,
                     command=(
-                        (lambda s=slave.slave_id, b=row.batfile_id:
+                        (lambda s=slave.slave_id, b=target_id:
                          self._on_run(s, b))
                         if (self._on_run and not disabled)
                         else (lambda: None)

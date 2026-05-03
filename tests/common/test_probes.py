@@ -53,6 +53,22 @@ class TestFolderExists:
                              "params": {"path": str(f)}})
         assert r.ok and r.value == "absent"
 
+    def test_invert_flips_present_to_absent(self, tmp_path):
+        """``invert: True`` lets a probe answer 'is the inverse condition
+        true?' — used by toggle pairs where each half wants its probe
+        to report 'effect in place' for opposite folder states."""
+        r = probes.evaluate({"type": "folder_exists",
+                             "params": {"path": str(tmp_path),
+                                        "invert": True}})
+        assert r.ok and r.value == "absent"
+
+    def test_invert_flips_absent_to_present(self, tmp_path):
+        ghost = tmp_path / "does_not_exist"
+        r = probes.evaluate({"type": "folder_exists",
+                             "params": {"path": str(ghost),
+                                        "invert": True}})
+        assert r.ok and r.value == "present"
+
 
 class TestFileContains:
     def test_present(self, tmp_path):

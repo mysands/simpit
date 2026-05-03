@@ -135,13 +135,24 @@ def _eval_folder_exists(params: dict, env: dict[str, str]) -> ProbeResult:
     Distinct from path_exists so users can detect "the file got created
     where the folder used to be" cases — useful when scripts rename
     folders to files-with-similar-names.
+
+    The optional ``invert`` parameter flips the present/absent answer.
+    Useful when a script's probe wants to report "the effect this
+    script *creates* is currently in place," and the natural folder
+    to check is one the inverse script's effect creates. For example
+    ``enable_custom_scenery`` reports "effect in place" iff the
+    DISABLED folder is *missing*.
     """
     raw = params.get("path")
     if not isinstance(raw, str) or not raw:
         return ProbeResult.err("path is required")
+    invert = bool(params.get("invert", False))
     p = Path(_expand(raw, env))
+    exists = p.is_dir()
+    if invert:
+        exists = not exists
     return ProbeResult(ok=True,
-                       value="present" if p.is_dir() else "absent",
+                       value="present" if exists else "absent",
                        detail={"path": str(p)})
 
 

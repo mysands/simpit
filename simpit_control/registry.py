@@ -84,6 +84,11 @@ class ScriptDef:
     # ── Probe ───────────────────────────────────────────────────────────────
     state_probe:   dict | None = None
 
+    # ── Pairing (optional) ──────────────────────────────────────────────────
+    # Points at the inverse script's ``script_name``. Mirrored on the
+    # paired half. The UI collapses both rows into one toggle.
+    pair_with:     str | None = None
+
     # ── Script content (loaded from scripts/ at import time) ─────────────────
     content_bat:   str = ""
     content_sh:    str = ""
@@ -102,6 +107,8 @@ REGISTRY: list[ScriptDef] = [
             "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED",
                        "invert": True},
         },
+        # Toggle pair: see disable_custom_scenery for the inverse half.
+        pair_with   = "disable_custom_scenery",
         content_bat = _load("enable_custom_scenery.bat"),
         content_sh  = _load("enable_custom_scenery.sh"),
     ),
@@ -114,6 +121,8 @@ REGISTRY: list[ScriptDef] = [
             "type":   "folder_exists",
             "params": {"path": "${XPLANE_FOLDER}/Custom Scenery DISABLED"},
         },
+        # Toggle pair: see enable_custom_scenery for the inverse half.
+        pair_with   = "enable_custom_scenery",
         content_bat = _load("disable_custom_scenery.bat"),
         content_sh  = _load("disable_custom_scenery.sh"),
     ),
@@ -197,6 +206,7 @@ def seed_registry(store: "sp_data.Store") -> int:
             target_slaves= defn.target_slaves,
             needs_admin  = defn.needs_admin,
             state_probe  = defn.state_probe,
+            pair_with    = defn.pair_with,
         )
         log.info("registry: seeded %s", defn.script_name)
         added += 1

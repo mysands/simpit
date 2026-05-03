@@ -93,7 +93,14 @@ class App(tk.Tk):
         self.title(f"{APP_TITLE} {VERSION}")
         self.configure(bg=theme.BG)
         self.minsize(720, 600)
-        self.geometry("960x720")
+        self.geometry("960x720")  # fallback if user un-maximizes
+        # Launch maximized. tk has no portable "maximize" — Windows
+        # uses state('zoomed'), Linux uses the -zoomed attribute,
+        # macOS has neither and we fall back to a screen-size
+        # geometry. Deferred via after() so the window has been
+        # mapped first; calling state('zoomed') synchronously inside
+        # __init__ is racy on some window managers.
+        self.after(0, self._maximize)
 
         self._build_ui()
 
@@ -106,6 +113,26 @@ class App(tk.Tk):
         self.after(self._DRAIN_INTERVAL_MS, self._drain_results)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── Window-state helpers ──
+    def _maximize(self) -> None:
+        """Maximize the window in a cross-platform way."""
+        # Windows
+        try:
+            self.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+        # Linux / X11
+        try:
+            self.attributes("-zoomed", True)
+            return
+        except tk.TclError:
+            pass
+        # macOS and any other fallback: size to the screen.
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{sw}x{sh}+0+0")
 
     # ── Public lifecycle helpers (entry point uses these) ──
     def maybe_show_first_run_notice(self) -> None:

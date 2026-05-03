@@ -236,11 +236,12 @@ def _handle_exec_script(conn: socket.socket, env: sp_protocol.Envelope,
     log.info("EXEC_SCRIPT %s env_keys=%s", script_name, list(env_overrides.keys()))
     extra_args = body.get("args") or []
     timeout = int(body.get("timeout_sec", sp_executor.DEFAULT_TIMEOUT_SEC))
+    needs_admin = bool(body.get("needs_admin", False))
 
     result = sp_executor.execute(
         paths, script_name=script_name,
         env_overrides=env_overrides, extra_args=extra_args,
-        timeout_sec=timeout,
+        timeout_sec=timeout, needs_admin=needs_admin,
     )
     reply = _ok("EXEC_SCRIPT_RESULT", result.to_dict(), key)
     try:

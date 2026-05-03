@@ -716,3 +716,186 @@ class TestRestoreXplaneScript:
         # The unsafe one didn't escape
         escape = backup_dir.parent.parent / "escape.txt"
         assert not escape.exists(), "path-traversal member should have been skipped"
+
+
+# ── Elevated execution dispatch ──────────────────────────────────────────────
+class TestElevatedDispatch:
+    """The executor's needs_admin path. The actual UAC handoff requires
+    Windows + an interactive desktop, so we can't exercise it end-to-end
+    in CI. We CAN verify the dispatch decision and that the path is a
+    no-op when admin isn't needed or the slave is already elevated."""
+
+    def test_needs_admin_false_runs_normally(self, tmp_path, monkeypatch):
+        """Default path: no admin, runs in-process, no powershell call."""
+        paths = sp_data.SlavePaths.under(tmp_path); paths.ensure()
+        script = paths.cascaded / "echo.py"
+        script.write_text("print('ran')\n")
+
+        called = {"powershell": False}
+        real_run = __import__("subprocess").run
+        def fake_run(argv, *a, **kw):
+            if argv and argv[0] == "powershell":
+                called["powershell"] = True
+            return real_run(argv, *a, **kw)
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = sp_executor.execute(paths, "echo", needs_admin=False)
+        assert result.exit_code == 0
+        assert "ran" in result.stdout
+        assert called["powershell"] is False, \
+            "needs_admin=False must not invoke powershell"
+
+    def test_needs_admin_skipped_when_already_elevated(
+        self, tmp_path, monkeypatch
+    ):
+        """If the agent is already running elevated, we bypass the
+        powershell handoff and run in-process — that's both faster and
+        keeps stdout/stderr in the normal capture path."""
+        paths = sp_data.SlavePaths.under(tmp_path); paths.ensure()
+        script = paths.cascaded / "echo.py"
+        script.write_text("print('elevated already')\n")
+        # Pretend we're admin
+        monkeypatch.setattr("simpit_common.platform.is_admin",
+                            lambda: True)
+        called = {"powershell": False}
+        real_run = __import__("subprocess").run
+        def fake_run(argv, *a, **kw):
+            if argv and argv[0] == "powershell":
+                called["powershell"] = True
+            return real_run(argv, *a, **kw)
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        result = sp_executor.execute(paths, "echo", needs_admin=True)
+        assert result.exit_code == 0
+        assert "elevated already" in result.stdout
+        assert called["powershell"] is False, \
+            "already-elevated must not re-elevate"
+
+    def test_needs_admin_on_posix_runs_normally(self, tmp_path, monkeypatch):
+        """On POSIX the elevated dispatch is Windows-only. needs_admin
+        falls through to normal execution; the script's own
+        permission check (e.g. 'cannot write to /etc/hosts') is what
+        would fail. Tests on a POSIX runner exercise this path."""
+        if EXT != ".sh":
+            pytest.skip("POSIX-only check")
+        paths = sp_data.SlavePaths.under(tmp_path); paths.ensure()
+        script = paths.cascaded / "echo.sh"
+        script.write_text("#!/bin/sh\necho posix\n")
+        import os; os.chmod(script, 0o755)
+        result = sp_executor.execute(paths, "echo", needs_admin=True)
+        assert result.exit_code == 0
+        assert "posix" in result.stdout
+
+    def test_needs_admin_passes_through_exec_signature(
+        self, tmp_path, monkeypatch
+    ):
+        """Default value for needs_admin is False (backwards compat)."""
+        paths = sp_data.SlavePaths.under(tmp_path); paths.ensure()
+        script = paths.cascaded / "echo.py"
+        script.write_text("print('default')\n")
+        # No needs_admin kwarg at all — old call sites must still work
+        result = sp_executor.execute(paths, "echo")
+        assert result.exit_code == 0
+
+
+# ── --run-script re-entry mode ───────────────────────────────────────────────
+class TestRunScriptMode:
+    """The hidden CLI mode the elevated child uses to runpy a target."""
+
+    def test_runs_script_with_env_file(self, tmp_path):
+        import json, subprocess, sys, os
+
+        script = tmp_path / "t.py"
+        script.write_text(
+            "import os, sys\n"
+            "print('VAL=' + os.environ.get('TEST_VAR', ''))\n"
+            "sys.exit(7)\n"
+        )
+        env_file = tmp_path / "env.json"
+        env_file.write_text(json.dumps({"TEST_VAR": "hello world"}))
+
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script),
+             "--env-file", str(env_file)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 7, \
+            f"script's exit code should propagate, got {result.returncode}"
+        assert "VAL=hello world" in result.stdout
+
+    def test_runs_script_without_env_file(self, tmp_path):
+        """env-file is optional. Without it, the script runs with the
+        current process's environment."""
+        import subprocess, sys
+
+        script = tmp_path / "t.py"
+        script.write_text("print('no env'); import sys; sys.exit(0)\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0
+        assert "no env" in result.stdout
+
+    def test_script_exception_returns_nonzero(self, tmp_path):
+        """An uncaught exception in the script should exit non-zero
+        with the exception text in stderr — not crash the re-entry."""
+        import subprocess, sys
+
+        script = tmp_path / "t.py"
+        script.write_text("raise RuntimeError('boom')\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0
+        assert "boom" in result.stderr
+
+    def test_missing_env_file_errors_cleanly(self, tmp_path):
+        import subprocess, sys
+        script = tmp_path / "t.py"
+        script.write_text("print('ok')\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script),
+             "--env-file", str(tmp_path / "does-not-exist.json")],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0
+        assert "env file" in result.stderr.lower()
+
+    def test_invalid_env_json_errors_cleanly(self, tmp_path):
+        import subprocess, sys
+        script = tmp_path / "t.py"
+        script.write_text("print('ok')\n")
+        bad = tmp_path / "bad.json"
+        bad.write_text("[not, an, object]")
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script),
+             "--env-file", str(bad)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0
+
+    def test_run_script_does_not_start_agent(self, tmp_path):
+        """Critical: --run-script must short-circuit before the agent
+        loop tries to bind ports. Otherwise the elevated child would
+        try to grab the same UDP/TCP ports the parent agent owns."""
+        import subprocess, sys
+
+        script = tmp_path / "fast.py"
+        script.write_text("import sys; sys.exit(0)\n")
+        # If the agent loop ran, this would either bind ports (bad) or
+        # block waiting for SIGINT (worse). Either way the timeout
+        # would expire. A successful 0-exit means the agent didn't run.
+        result = subprocess.run(
+            [sys.executable, "-m", "simpit_slave",
+             "--run-script", str(script)],
+            capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode == 0, \
+            "--run-script should short-circuit before agent startup"

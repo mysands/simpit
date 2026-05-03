@@ -120,9 +120,15 @@ class SlaveLink:
     def exec_script(self, script_name: str,
                     env_overrides: dict[str, str] | None = None,
                     args: list[str] | None = None,
+                    needs_admin: bool = False,
                     timeout_sec: int = 300,
                     deadline: float = DEFAULT_TCP_TIMEOUT) -> dict:
         """Run a script on the slave and get the full result.
+
+        ``needs_admin``: hint to the slave that this script requires
+        elevated privileges. The slave decides what to do with it
+        (run-as on Windows; the result is the same to Control either
+        way: a body with exit_code, stdout, stderr).
 
         Two timeouts: `timeout_sec` is the slave's *script* timeout (how
         long the script is allowed to run); `deadline` is *our* network
@@ -134,6 +140,7 @@ class SlaveLink:
             "script_name": script_name,
             "env":         env_overrides or {},
             "args":        args or [],
+            "needs_admin": needs_admin,
             "timeout_sec": timeout_sec,
         }
         env = sp_protocol.make_envelope("EXEC_SCRIPT", body=body)

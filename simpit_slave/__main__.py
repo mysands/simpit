@@ -76,6 +76,50 @@ def _ensure_key(key_file: Path, prompt: bool) -> bytes:
     return key
 
 
+def _run_script_mode(script_path: Path, env_file: Path | None) -> int:
+    """Hidden re-entry mode used by the elevated execution path.
+
+    The slave invokes itself as ``simpit-slave.exe --run-script PATH
+    [--env-file ENV.json]`` to run a single script under whatever
+    privilege level the OS gave this process. The elevated child
+    runs runpy on the target script, with environment loaded from
+    the JSON file if supplied. stdout/stderr go to whatever the
+    parent (PowerShell's Start-Process redirection) wired up — we
+    don't capture them here.
+
+    Returns the script's exit code so the parent can surface it.
+    """
+    import json
+    import os
+    import runpy
+
+    if env_file is not None:
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                env = json.load(f)
+        except OSError as e:
+            print(f"ERROR: cannot read env file {env_file}: {e}",
+                  file=sys.stderr)
+            return 1
+        if not isinstance(env, dict):
+            print(f"ERROR: env file is not a JSON object: {env_file}",
+                  file=sys.stderr)
+            return 1
+        os.environ.clear()
+        os.environ.update({str(k): str(v) for k, v in env.items()})
+
+    # runpy.run_path handles .py with __name__ == "__main__" semantics
+    # so the script's `if __name__ == "__main__"` block runs.
+    try:
+        runpy.run_path(str(script_path), run_name="__main__")
+        return 0
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else 0
+    except Exception as e:
+        print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns process exit code."""
     parser = argparse.ArgumentParser(
@@ -95,7 +139,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-prompt", action="store_true",
                         help="Don't prompt for a missing key — exit instead.")
     parser.add_argument("-v", "--verbose", action="store_true")
+    # Hidden re-entry mode used by the elevated-execution path. When
+    # this flag is set the agent does NOT start; it just runs one
+    # script and exits. Documented in executor._execute_elevated_windows.
+    parser.add_argument("--run-script", type=Path, default=None,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--env-file", type=Path, default=None,
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    # Re-entry path: short-circuit before any agent startup.
+    if args.run_script is not None:
+        return _run_script_mode(args.run_script, args.env_file)
 
     paths = sp_data.SlavePaths.under(args.data_dir)
     paths.ensure()

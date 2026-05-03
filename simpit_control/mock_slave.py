@@ -125,10 +125,13 @@ class MockSlaveLink:
     def exec_script(self, script_name: str,
                     env_overrides: dict[str, str] | None = None,
                     args: list[str] | None = None,
+                    needs_admin: bool = False,
                     timeout_sec: int = 300,
                     deadline: float = 60.0) -> dict:
         self._maybe_misbehave()
-        # Pretend the script ran successfully.
+        # Pretend the script ran successfully. The mock doesn't
+        # simulate UAC; needs_admin is accepted for signature parity
+        # with the real link only.
         return {
             "script_name": script_name,
             "found":       True,

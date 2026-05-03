@@ -196,7 +196,9 @@ class Controller:
             # caller-supplied env overrides for one-off parameter injection.
             merged_env = {**slave.env, **(env or {})}
             try:
-                body = link.exec_script(bat.script_name, env_overrides=merged_env)
+                body = link.exec_script(bat.script_name,
+                                         env_overrides=merged_env,
+                                         needs_admin=bat.needs_admin)
                 ok = bool(body.get("found")) and body.get("exit_code") == 0
                 msg = (f"{bat.name} on {slave.name} -> exit "
                        f"{body.get('exit_code')}")

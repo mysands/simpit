@@ -147,15 +147,34 @@ def _prune(backup_dir: Path, host: str, ext: str, keep: int) -> None:
 
     Uses mtime, not name, for ordering — robust to clock changes mid-
     sequence and to manual file copies that preserve the original
-    timestamp. Filename prefix filter ensures we only ever consider
-    archives this host produced.
+    timestamp.
+
+    Host matching is **case-sensitive** even on case-insensitive
+    filesystems (NTFS on Windows, default APFS/HFS+ on macOS).
+    ``Path.glob`` follows the underlying filesystem's case rules,
+    so on Windows a glob of ``xplane-CenterLeft-*`` would also
+    match ``xplane-CENTERLEFT-*`` files written by a different
+    slave whose hostname differs only in case — and prune would
+    silently delete them. We instead enumerate the directory and
+    filter via ``str.startswith`` / ``str.endswith``, both of which
+    are case-sensitive in Python regardless of platform.
     """
-    pattern = f"{FNAME_PREFIX}-{host}-*{ext}"
-    candidates = sorted(
-        (p for p in backup_dir.glob(pattern) if p.is_file()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,  # newest first
-    )
+    own_prefix = f"{FNAME_PREFIX}-{host}-"
+    candidates = []
+    for p in backup_dir.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name
+        # Case-sensitive match on both ends; `own_prefix` ends with
+        # '-' so we don't accidentally match a longer hostname that
+        # starts with this one (e.g. host='Left' wouldn't pull in
+        # 'LeftSlave' archives).
+        if not name.startswith(own_prefix):
+            continue
+        if not name.endswith(ext):
+            continue
+        candidates.append(p)
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     _log(f"prune: found {len(candidates)} archive(s) for host '{host}', keep={keep}")
     for stale in candidates[keep:]:
         try:

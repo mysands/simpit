@@ -159,7 +159,6 @@ REGISTRY: list[ScriptDef] = [
         content_sh  = "",
     ),
     ScriptDef(
-<<<<<<< HEAD
         # Backs up XPLANE_FOLDER (everything except Custom Scenery)
         # to BACKUP_FOLDER. Filenames embed hostname so several
         # slaves can share one BACKUP_FOLDER without collisions.
@@ -187,7 +186,9 @@ REGISTRY: list[ScriptDef] = [
         needs_admin = False,
         state_probe = None,
         content_bat = _load("restore_xplane.py"),
-=======
+        content_sh  = "",
+    ),
+    ScriptDef(
         name        = "Quit X-Plane",
         script_name = "quit_xplane",
         cascade     = True,
@@ -198,7 +199,6 @@ REGISTRY: list[ScriptDef] = [
         state_probe = None,
         # .py handles both platforms — stored in content_bat by convention
         content_bat = _load("quit_xplane.py"),
->>>>>>> feat(scripts): add quit_xplane script
         content_sh  = "",
     ),
 ]

@@ -83,10 +83,23 @@ def _pick_archive(backup_dir: Path, explicit: str, host: str) -> Path | None:
             return None
         return path
 
+    # Case-sensitive scan: Path.glob inherits the filesystem's case
+    # rules (NTFS / default APFS = insensitive), so on Windows
+    # 'xplane-CenterLeft-*' would also match 'xplane-CENTERLEFT-*'
+    # archives produced by a different slave — and we'd silently
+    # restore over the wrong machine's install. str.startswith /
+    # str.endswith are case-sensitive on every platform.
+    own_prefix = f"{FNAME_PREFIX}-{host}-"
     candidates = []
-    for ext in (".zip", ".tar.gz"):
-        candidates.extend(backup_dir.glob(f"{FNAME_PREFIX}-{host}-*{ext}"))
-    candidates = [p for p in candidates if p.is_file()]
+    for p in backup_dir.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name
+        if not name.startswith(own_prefix):
+            continue
+        if not (name.endswith(".zip") or name.endswith(".tar.gz")):
+            continue
+        candidates.append(p)
     if not candidates:
         _err(f"no archives found for host '{host}' in {backup_dir}")
         _err("set BACKUP_FILE to restore from a different host's archive")

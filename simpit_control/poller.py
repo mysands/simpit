@@ -37,11 +37,18 @@ UI shows OFFLINE/UNKNOWN; that's correct, not a bug.
 """
 from __future__ import annotations
 
+import logging
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Protocol
+
+from simpit_common import protocol as sp_protocol
+from simpit_common import security as sp_security
+
+_reg_log = logging.getLogger("simpit.registration")
 
 from simpit_common import probes as sp_probes
 
@@ -325,3 +332,110 @@ class Poller:
                 # are swallowed; the subscriber is responsible for its
                 # own logging.
                 pass
+
+
+# ── Auto-registration listener ───────────────────────────────────────────────
+RegisterCallback = Callable[[str, str, int, int, dict], None]
+"""Called when a new slave announces itself.
+
+Args:
+    name     — display name from slave-config.json
+    host     — IP address the datagram arrived from
+    udp_port — slave's UDP port
+    tcp_port — slave's TCP port
+    env      — environment variables (XPLANE_FOLDER, etc.)
+"""
+
+
+class RegistrationListener:
+    """Background UDP listener that auto-registers slaves.
+
+    Binds to ``0.0.0.0:<udp_port>`` and watches for ``SLAVE_ONLINE``
+    datagrams that carry a ``register_name`` field — written by the
+    installer into the slave's ``slave-config.json``.  On receipt it
+    fires ``on_register`` (on the listener thread) so the app can add
+    the slave to the store and refresh the UI.
+
+    Gracefully no-ops if the port is already in use (e.g. a slave is
+    running on the same machine as Control).
+    """
+
+    def __init__(self, key: bytes, udp_port: int,
+                 on_register: RegisterCallback):
+        self._key        = key
+        self._key_lock   = threading.Lock()
+        self.udp_port    = udp_port
+        self.on_register = on_register
+        self._stop       = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._sock: socket.socket | None = None
+
+    def start(self) -> None:
+        try:
+            sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sk.settimeout(1.0)
+            sk.bind(("0.0.0.0", self.udp_port))
+            self._sock = sk
+        except OSError as e:
+            _reg_log.warning(
+                "RegistrationListener could not bind to port %d: %s — "
+                "auto-registration disabled.", self.udp_port, e)
+            return
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="simpit-reg-listener")
+        self._thread.start()
+        _reg_log.info("Registration listener started on UDP %d", self.udp_port)
+
+    def stop(self, join_timeout: float = 2.0) -> None:
+        self._stop.set()
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        if self._thread:
+            self._thread.join(timeout=join_timeout)
+
+    def update_key(self, new_key: bytes) -> None:
+        """Hot-swap the verification key (called when user rotates the key).
+
+        Thread-safe: both this writer and the receiver thread hold
+        ``_key_lock`` when touching ``_key``, so there is no torn read.
+        """
+        with self._key_lock:
+            self._key = new_key
+
+    def _run(self) -> None:
+        assert self._sock is not None
+        while not self._stop.is_set():
+            try:
+                data, addr = self._sock.recvfrom(8192)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            host = addr[0]
+            with self._key_lock:
+                current_key = self._key
+            try:
+                env = sp_security.verify_and_parse(data, current_key)
+            except sp_protocol.ProtocolError:
+                continue   # wrong key or malformed — ignore silently
+            if env.cmd != "SLAVE_ONLINE":
+                continue
+            body = env.body if isinstance(env.body, dict) else {}
+            name = body.get("register_name", "")
+            if not name:
+                continue   # no registration request — normal broadcast
+            env_vars  = body.get("register_env") or {}
+            udp_port  = int(body.get("udp_port", sp_protocol.DEFAULT_UDP_PORT))
+            tcp_port  = int(body.get("tcp_port", sp_protocol.DEFAULT_TCP_PORT))
+            _reg_log.info("Registration request from %s: name=%r", host, name)
+            try:
+                self.on_register(name, host, udp_port, tcp_port,
+                                 {str(k): str(v) for k, v in env_vars.items()
+                                  if isinstance(env_vars, dict)})
+            except Exception:
+                _reg_log.exception("on_register callback raised")

@@ -273,13 +273,18 @@ def _handle_sync_push(conn: socket.socket, env: sp_protocol.Envelope,
 
 
 # ── Online broadcaster ───────────────────────────────────────────────────────
-def _broadcast_online(key: bytes, port: int, stop_event: threading.Event) -> None:
+def _broadcast_online(key: bytes, udp_port: int, tcp_port: int,
+                      config: "sp_data.SlaveConfig",
+                      stop_event: threading.Event) -> None:
     """Periodically broadcast SLAVE_ONLINE so Control discovers us.
 
-    Uses UDP broadcast to 255.255.255.255. Routers/firewalls may drop
-    it; that's fine — the absence of a broadcast just means Control has
-    to learn about the slave via explicit add. The broadcast is a
-    convenience, not a requirement.
+    Sends to 255.255.255.255 (LAN broadcast) and, if a control_host is
+    configured, also directly to that IP (unicast) so registration works
+    on networks that drop broadcast packets.
+
+    The body includes optional registration fields when a SlaveConfig is
+    present. Control uses these to auto-register the slave without manual
+    input from the user.
     """
     import socket as _sock
     sk = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
@@ -287,11 +292,25 @@ def _broadcast_online(key: bytes, port: int, stop_event: threading.Event) -> Non
     try:
         while not stop_event.is_set():
             try:
-                env = sp_protocol.make_envelope(
-                    "SLAVE_ONLINE",
-                    body={"hostname": _sock.gethostname()})
+                body: dict = {
+                    "hostname": _sock.gethostname(),
+                    "udp_port": udp_port,
+                    "tcp_port": tcp_port,
+                }
+                if config.name:
+                    body["register_name"] = config.name
+                if config.env:
+                    body["register_env"] = dict(config.env)
+                env = sp_protocol.make_envelope("SLAVE_ONLINE", body=body)
                 wire = sp_security.sign_envelope(env, key).to_json_bytes()
-                sk.sendto(wire, ("255.255.255.255", port))
+                # LAN broadcast
+                sk.sendto(wire, ("255.255.255.255", udp_port))
+                # Direct unicast to Control if configured
+                if config.control_host:
+                    try:
+                        sk.sendto(wire, (config.control_host, udp_port))
+                    except OSError as e:
+                        log.debug("unicast to control failed: %s", e)
             except OSError as e:
                 log.debug("online broadcast failed: %s", e)
             stop_event.wait(ONLINE_BROADCAST_INTERVAL)
@@ -314,9 +333,10 @@ class Agent:
 
     def __init__(self, paths: sp_data.SlavePaths, key: bytes,
                  config: AgentConfig | None = None):
-        self.paths  = paths
-        self.key    = key
-        self.config = config or AgentConfig()
+        self.paths       = paths
+        self.key         = key
+        self.config      = config or AgentConfig()
+        self.slave_config = sp_data.SlaveConfig.load(paths.root)
         self._stop  = threading.Event()
         self._udp_server: _ThreadingUDPServer | None = None
         self._udp_thread: threading.Thread | None = None
@@ -364,7 +384,8 @@ class Agent:
         if self.config.broadcast:
             self._broadcast_thread = threading.Thread(
                 target=_broadcast_online,
-                args=(self.key, self.config.udp_port, self._stop),
+                args=(self.key, self.config.udp_port, self.config.tcp_port,
+                      self.slave_config, self._stop),
                 daemon=True, name="simpit-broadcast")
             self._broadcast_thread.start()
 

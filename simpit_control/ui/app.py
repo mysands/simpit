@@ -34,13 +34,15 @@ from .. import poller as sp_poller
 from . import theme
 from .controller import Controller, LinkFactory, RealLinkFactory
 from .dialogs import BatFileDialog, SecuritySetupDialog, SlaveDialog
+from .net_utils import local_ips
 from .viewmodels import DashboardVM
 from .widgets import BatFileListWidget, LogPanel, SlaveCardWidget
 
 log = logging.getLogger("simpit.ui.app")
 
 APP_TITLE = "SimPit Control"
-VERSION   = "0.1.0"
+VERSION   = "0.2.0"
+
 
 
 class App(tk.Tk):
@@ -89,6 +91,18 @@ class App(tk.Tk):
         self.controller = Controller(
             self.store, self.link_factory, self.poller)
 
+        # ── Auto-registration listener ──
+        # Only start when a real key is loaded.  Starting with an all-zero
+        # fallback key would let any unauthenticated datagram trigger slave
+        # registration, so we skip it entirely until the user sets a key.
+        self._reg_listener = sp_poller.RegistrationListener(
+            key=self.key if self.key else b"\x00" * 32,
+            udp_port=49100,
+            on_register=self._on_slave_register,
+        )
+        if self.key is not None:
+            self._reg_listener.start()
+
         # ── Window ──
         self.title(f"{APP_TITLE} {VERSION}")
         self.configure(bg=theme.BG)
@@ -113,6 +127,21 @@ class App(tk.Tk):
         self.after(self._DRAIN_INTERVAL_MS, self._drain_results)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── IP helpers ──
+    def _copy_ip(self, _event=None) -> None:
+        """Copy the first local IP to the clipboard."""
+        if self._ips:
+            self.clipboard_clear()
+            self.clipboard_append(self._ips[0])
+            self.log_panel_append_safe(f"Copied IP {self._ips[0]} to clipboard.", "ok")
+
+    def log_panel_append_safe(self, msg: str, tag: str = "") -> None:
+        """Append to the log panel if it exists yet (safe to call from __init__)."""
+        try:
+            self.log_panel.append(msg, tag)
+        except AttributeError:
+            pass
 
     # ── Window-state helpers ──
     def _maximize(self) -> None:
@@ -156,6 +185,22 @@ class App(tk.Tk):
         tk.Label(hdr, text=f"v{VERSION}", font=theme.FONT_TINY,
                  bg=theme.PANEL, fg=theme.SUBTEXT,
                  ).pack(side="left", pady=10)
+
+        # IP address display — lets the user know what to enter during slave setup.
+        self._ips = local_ips()
+        ip_str    = ", ".join(self._ips) if self._ips else "unknown"
+        ip_label  = tk.Label(
+            hdr, text=f"   |   This PC: {ip_str}",
+            font=theme.FONT_TINY, bg=theme.PANEL, fg=theme.SUBTEXT,
+            cursor="hand2")
+        ip_label.pack(side="left", pady=10)
+        ip_label.bind("<Button-1>", self._copy_ip)
+        ip_label.bind("<Enter>",
+                      lambda e: ip_label.config(fg=theme.ACCENT))
+        ip_label.bind("<Leave>",
+                      lambda e: ip_label.config(fg=theme.SUBTEXT))
+        from .widgets.tooltip import Tooltip
+        Tooltip(ip_label, "Click to copy IP address")
 
         # Header buttons
         theme.make_button(hdr, "+ Slave", self._add_slave,
@@ -300,8 +345,103 @@ class App(tk.Tk):
         self.poller.subscribe(self._on_poller_update)
         self.controller.poller = self.poller
         self.poller.start()
-        self.log_panel.append("Security key updated; poller restarted.",
-                                "ok")
+        # Update the registration listener key.  If it wasn't already running
+        # (because no key was set at startup) start it now.
+        self._reg_listener.update_key(new_key)
+        if self._reg_listener._thread is None or not self._reg_listener._thread.is_alive():
+            self._reg_listener.start()
+        self.log_panel.append("Security key updated; poller restarted.", "ok")
+
+    # ── Input sanitisation helpers ──
+    @staticmethod
+    def _sanitize_slave_name(raw: str) -> str:
+        """Return a safe display name from a slave-supplied string.
+
+        Strips non-printable characters and limits length so a rogue
+        datagram cannot inject control sequences or overflow a label.
+        """
+        cleaned = "".join(c for c in str(raw) if c.isprintable())
+        return cleaned[:64].strip() or "Unknown Slave"
+
+    @staticmethod
+    def _sanitize_env(raw: dict) -> dict[str, str]:
+        """Return a sanitised copy of an env dict.
+
+        Keys and values are coerced to str, stripped of non-printables,
+        and limited to sane lengths.  Only known-safe key names are kept
+        so a rogue packet cannot inject unexpected env variables.
+        """
+        ALLOWED_KEYS = frozenset({
+            "XPLANE_FOLDER", "XPLANE_EXE",
+            "BACKUP_FOLDER", "BACKUP_KEEP",
+        })
+        out: dict[str, str] = {}
+        for k, v in raw.items():
+            key = "".join(c for c in str(k) if c.isprintable())[:64]
+            if key not in ALLOWED_KEYS:
+                continue
+            val = "".join(c for c in str(v) if c.isprintable())[:512]
+            out[key] = val
+        return out
+
+    def _on_slave_register(self, name: str, host: str,
+                           udp_port: int, tcp_port: int,
+                           env: dict) -> None:
+        """Called from the registration listener thread when a new slave announces itself.
+
+        Sanitises the slave-supplied fields, checks for duplicates, then
+        prompts the user on the main thread before adding the slave to
+        the store.  The confirmation step prevents a rogue SLAVE_ONLINE
+        broadcast from silently injecting entries into Control's slave
+        list.
+        """
+        # Sanitise inputs before touching the store.
+        safe_name = self._sanitize_slave_name(name)
+        safe_env  = self._sanitize_env(env if isinstance(env, dict) else {})
+
+        # Check for an existing slave with the same host OR name to avoid
+        # duplicates.  We check both to catch the case where the same
+        # machine re-registers with a different name.
+        existing_by_host = [s for s in self.store.slaves() if s.host == host]
+        if existing_by_host:
+            log.debug("Slave at %s already registered (%s) — ignoring re-announce",
+                      host, existing_by_host[0].name)
+            return
+        existing_by_name = [s for s in self.store.slaves()
+                            if s.name.lower() == safe_name.lower()]
+        if existing_by_name:
+            log.debug("Slave named %r already registered — ignoring re-announce",
+                      safe_name)
+            return
+
+        # All store mutations and UI calls must happen on the main thread.
+        def _do_add():
+            # Re-check inside the main thread to be safe against races.
+            if any(s.host == host for s in self.store.slaves()):
+                return
+            if any(s.name.lower() == safe_name.lower()
+                   for s in self.store.slaves()):
+                return
+            # Ask the user before adding — a silently accepted broadcast
+            # would be a security risk.
+            if not messagebox.askyesno(
+                    "New slave detected",
+                    f"A slave is requesting to register:\n\n"
+                    f"  Name:  {safe_name}\n"
+                    f"  Host:  {host}\n"
+                    f"  Ports: UDP {udp_port}  TCP {tcp_port}\n\n"
+                    "Add this slave to Control?",
+                    parent=self):
+                log.info("User declined auto-registration of %s (%s)",
+                         safe_name, host)
+                return
+            self.store.add_slave(name=safe_name, host=host,
+                                 udp_port=udp_port, tcp_port=tcp_port,
+                                 env=safe_env)
+            self.log_panel.append(
+                f"Auto-registered new slave: {safe_name} ({host})", "ok")
+            self._refresh_dashboard()
+        self._from_worker(_do_add)
 
     def _add_slave(self) -> None:
         SlaveDialog(self, self.controller, existing=None,
@@ -431,6 +571,10 @@ class App(tk.Tk):
     def _on_close(self) -> None:
         try:
             self.poller.stop(join_timeout=1.0)
+        except Exception:
+            pass
+        try:
+            self._reg_listener.stop(join_timeout=1.0)
         except Exception:
             pass
         self.destroy()

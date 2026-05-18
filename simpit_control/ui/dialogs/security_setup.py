@@ -24,6 +24,7 @@ from typing import Callable
 from simpit_common import security as sp_security
 
 from .. import theme
+from ..net_utils import local_ips
 
 
 class SecuritySetupDialog(tk.Toplevel):
@@ -58,7 +59,24 @@ class SecuritySetupDialog(tk.Toplevel):
                  ).pack(pady=(0, 4))
         tk.Label(self, text=f"Stored at: {self.key_file}",
                  font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
-                 ).pack(pady=(0, 16))
+                 ).pack(pady=(0, 4))
+
+        # Show this machine's IP so the user knows what to enter during slave install.
+        ips     = local_ips()
+        ip_str  = ", ".join(ips) if ips else "unknown"
+        ip_row  = tk.Frame(self, bg=theme.BG)
+        ip_row.pack(pady=(0, 12))
+        tk.Label(ip_row, text=f"This PC's IP:  {ip_str}",
+                 font=theme.FONT_SMALL, bg=theme.BG, fg=theme.ACCENT,
+                 ).pack(side="left")
+        if ips:
+            def _copy_ip():
+                self.clipboard_clear()
+                self.clipboard_append(ips[0])
+            theme.make_button(ip_row, "Copy IP", _copy_ip,
+                              color=theme.BTN_BG,
+                              font=theme.FONT_TINY,
+                              ).pack(side="left", padx=(8, 0))
 
         # Key display
         tk.Label(self, text="KEY (hex):", font=theme.FONT_TINY,

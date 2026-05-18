@@ -31,14 +31,63 @@ script that would then execute with garbage content.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 from simpit_common import platform as sp_platform
 from simpit_common import security as sp_security
+
+
+# ── Installer-written slave configuration ────────────────────────────────────
+CONFIG_FILENAME = "slave-config.json"
+
+
+@dataclass
+class SlaveConfig:
+    """Optional configuration written by the installer during slave setup.
+
+    The installer collects the slave's display name, the Control machine's
+    IP, and any environment variables (X-Plane paths, backup settings) and
+    writes them here as ``slave-config.json`` alongside ``simpit.key``.
+
+    On startup the agent reads this file (if present) and:
+    * Includes the name and env in its ``SLAVE_ONLINE`` broadcasts so
+      Control can auto-register this machine without manual input.
+    * Sends a direct unicast ``SLAVE_ONLINE`` to ``control_host`` in
+      addition to the LAN broadcast, so registration works even on
+      networks that drop broadcast packets.
+
+    All fields have safe defaults so a missing or partial file is fine.
+    """
+    name:         str             = ""       # Display name shown in Control
+    control_host: str             = ""       # IP of the Control machine
+    udp_port:     int             = 49100
+    tcp_port:     int             = 49101
+    env:          dict[str, str]  = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, data_dir: Path) -> "SlaveConfig":
+        """Load from ``<data_dir>/slave-config.json``, returning defaults on any error."""
+        path = Path(data_dir) / CONFIG_FILENAME
+        if not path.is_file():
+            return cls()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            env_raw = raw.get("env") or {}
+            return cls(
+                name         = str(raw.get("name", "")),
+                control_host = str(raw.get("control_host", "")),
+                udp_port     = int(raw.get("udp_port", 49100)),
+                tcp_port     = int(raw.get("tcp_port", 49101)),
+                env          = {str(k): str(v) for k, v in env_raw.items()
+                                if isinstance(env_raw, dict)},
+            )
+        except Exception:
+            return cls()
 
 
 # ── Layout helpers ───────────────────────────────────────────────────────────

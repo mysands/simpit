@@ -20,10 +20,55 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
 from simpit_common import security as sp_security
+
+
+# ── Bind-error diagnostics ────────────────────────────────────────────────────
+
+def _port_in_excluded_range(port: int, protocol: str) -> bool:
+    """Return True if *port* is in Windows's dynamic excluded port range.
+
+    Windows (especially with Hyper-V, Docker Desktop, or WSL2 installed)
+    reserves blocks of ports for its own use.  Binding to one of those
+    ports fails with WinError 10013 — the same error as a firewall block —
+    so we must query the excluded ranges to tell the two apart.
+    """
+    try:
+        out = subprocess.check_output(
+            ["netsh", "interface", "ipv4", "show", "excludedportrange",
+             f"protocol={protocol}"],
+            stderr=subprocess.DEVNULL, text=True, timeout=5,
+        )
+    except Exception:
+        return False
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                start, end = int(parts[0]), int(parts[1])
+                if start <= port <= end:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _diagnose_bind_failure(udp_port: int, tcp_port: int) -> str:
+    """Return ``'reserved'`` if the ports are Windows-excluded, else ``'firewall'``.
+
+    Only meaningful on Windows — always returns ``'firewall'`` on other OSes
+    since that's the only plausible cause there.
+    """
+    if sys.platform != "win32":
+        return "firewall"
+    if (_port_in_excluded_range(udp_port, "udp") or
+            _port_in_excluded_range(tcp_port, "tcp")):
+        return "reserved"
+    return "firewall"
 
 from . import agent as sp_agent
 from . import data as sp_data
@@ -164,7 +209,84 @@ def main(argv: list[str] | None = None) -> int:
         broadcast=not args.no_broadcast,
     )
     a = sp_agent.Agent(paths=paths, key=key, config=cfg)
-    a.start()
+    try:
+        a.start()
+    except PermissionError as exc:
+        # WinError 10013 (WSAEACCES) during bind() has two entirely different
+        # causes that look identical to Python:
+        #   A) Windows Firewall blocked the port
+        #   B) Windows reserved the port for Hyper-V / Docker / WSL2
+        # Cause B cannot be fixed by any firewall change — we must tell the
+        # user the real reason.  Query the excluded port ranges to decide.
+        _log = logging.getLogger("simpit.slave")
+        _log.error(
+            "Cannot start: socket bind failed on UDP %d / TCP %d: %s",
+            cfg.udp_port, cfg.tcp_port, exc,
+        )
+        _diagnosis = _diagnose_bind_failure(cfg.udp_port, cfg.tcp_port)
+        _log.error("Diagnosis: %s", _diagnosis)
+
+        if _diagnosis == "reserved":
+            _title = "Simpit Slave — Port Reserved by Windows"
+            _msg = (
+                f"Simpit Slave cannot start because Windows has reserved\n"
+                f"port {cfg.udp_port} (UDP) and/or {cfg.tcp_port} (TCP)\n"
+                "for its own use.\n\n"
+                "This is NOT a firewall problem — adding firewall rules\n"
+                "will not help. This happens when Hyper-V, Docker Desktop,\n"
+                "or WSL2 is installed (common on Windows 11).\n\n"
+                "FIX 1 — Restart this PC (try this first):\n"
+                "  Windows releases reserved ports on reboot.\n\n"
+                "FIX 2 — If restarting does not help:\n"
+                "  1. Click Start, search 'Command Prompt',\n"
+                "     right-click it, choose 'Run as administrator'.\n"
+                "  2. Type this and press Enter:\n"
+                "       net stop winnat\n"
+                "     (This temporarily releases Hyper-V reserved ports.)\n"
+                "  3. Start Simpit Slave from the Start menu.\n"
+                "  4. When done for the day, type:\n"
+                "       net start winnat\n\n"
+                "FIX 3 — Permanently change the ports:\n"
+                "  Re-run the Simpit installer and enter port numbers\n"
+                "  that are NOT in the reserved range (see below).\n"
+                "  To see which ports are reserved, open Command Prompt\n"
+                "  (as administrator) and run:\n"
+                "    netsh interface ipv4 show excludedportrange protocol=udp\n"
+                "    netsh interface ipv4 show excludedportrange protocol=tcp\n\n"
+                f"(Technical detail: {exc})"
+            )
+        else:
+            _exe = sys.executable
+            _title = "Simpit Slave — Firewall Error"
+            _msg = (
+                "Simpit Slave cannot start because Windows Firewall\n"
+                "is blocking it.\n\n"
+                "HOW TO FIX — allow Simpit Slave through the firewall:\n\n"
+                "Step 1:  Click Start, search for:\n"
+                "           Allow an app through Windows Firewall\n"
+                "         Click the result that appears.\n\n"
+                "Step 2:  Click 'Change settings'.\n"
+                "         Click Yes when Windows asks for permission.\n\n"
+                "Step 3:  Click 'Allow another app...' near the bottom.\n\n"
+                "Step 4:  Click 'Browse...' and navigate to:\n"
+                f"           {_exe}\n"
+                "         Select it and click Open.\n\n"
+                "Step 5:  Click 'Add'.\n\n"
+                "Step 6:  Find 'simpit-slave' in the list.\n"
+                "         Tick BOTH boxes: Private and Public.\n"
+                "         Click OK.\n\n"
+                "After that, start Simpit Slave from the Start menu.\n\n"
+                f"(Technical detail: {exc})"
+            )
+
+        _log.error("%s\n%s", _title, _msg)
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, _msg, _title, 0x10)
+            except Exception:
+                pass
+        return 1
 
     # Run until SIGINT/SIGTERM. We don't busy-loop; signal handlers set
     # an event that the main thread waits on.

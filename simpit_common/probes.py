@@ -203,6 +203,98 @@ def _eval_process_running(params: dict, env: dict[str, str]) -> ProbeResult:
                        detail={"name": expanded})
 
 
+def _eval_xplane_dataref(params: dict, env: dict[str, str]) -> ProbeResult:
+    """Read an X-Plane dataref value via the RREF UDP protocol.
+
+    Sends one RREF subscribe packet to X-Plane, waits for a response, then
+    unsubscribes. Designed for short-lived synchronous probes (STATUS polls)
+    rather than continuous streaming — keep timeout short (default 0.3s).
+
+    Params:
+        dataref   (str, required) — X-Plane dataref path
+        host      (str)  — X-Plane UDP host, default "127.0.0.1"
+        port      (int)  — X-Plane UDP port, default 49000
+        threshold (float)— value above which result is "present", default 0.5
+        invert    (bool) — flip present/absent, default false
+        timeout   (float)— socket timeout in seconds, default 0.3
+
+    Returns "present", "absent", or "unavailable" (X-Plane not responding).
+    """
+    import socket
+    import struct
+
+    dataref = params.get("dataref")
+    if not isinstance(dataref, str) or not dataref:
+        return ProbeResult.err("dataref is required")
+    dataref = _expand(dataref, env)
+
+    host      = _expand(str(params.get("host", "127.0.0.1")), env)
+    port      = int(params.get("port", 49000))
+    threshold = float(params.get("threshold", 0.5))
+    invert    = bool(params.get("invert", False))
+    timeout   = float(params.get("timeout", 0.3))
+    _IDX      = 42  # arbitrary tag echoed back by X-Plane in RREF responses
+
+    def _rref(freq: int) -> bytes:
+        return struct.pack("<4sxii400s", b"RREF", freq, _IDX,
+                          dataref.encode("latin-1"))
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(_rref(1), (host, port))
+            try:
+                while True:
+                    try:
+                        data, _ = s.recvfrom(2048)
+                    except socket.timeout:
+                        try:
+                            s.sendto(_rref(0), (host, port))
+                        except OSError:
+                            pass
+                        # Sim not reachable → dataref value is effectively 0.
+                        # Applying threshold/invert with 0.0 means "connect"
+                        # probes (invert=True) correctly show "present" and
+                        # "disconnect" probes show "absent" when sim is down.
+                        present = (0.0 > threshold) != invert
+                        return ProbeResult(ok=True,
+                                           value="present" if present else "absent",
+                                           detail={"dataref": dataref,
+                                                   "reason": "sim_offline"})
+                    except OSError:
+                        # e.g. WinError 10054: ICMP port-unreachable from a
+                        # closed UDP port — treat same as timeout.
+                        present = (0.0 > threshold) != invert
+                        return ProbeResult(ok=True,
+                                           value="present" if present else "absent",
+                                           detail={"dataref": dataref,
+                                                   "reason": "unreachable"})
+                    if data[:4] != b"RREF":
+                        continue
+                    payload = data[5:]
+                    for off in range(0, len(payload) - 7, 8):
+                        i, value = struct.unpack_from("<if", payload, off)
+                        if i == _IDX:
+                            try:
+                                s.sendto(_rref(0), (host, port))
+                            except OSError:
+                                pass
+                            present = (value > threshold) != invert
+                            return ProbeResult(
+                                ok=True,
+                                value="present" if present else "absent",
+                                detail={"dataref": dataref, "raw": value},
+                            )
+            except OSError:
+                present = (0.0 > threshold) != invert
+                return ProbeResult(ok=True,
+                                   value="present" if present else "absent",
+                                   detail={"dataref": dataref,
+                                           "reason": "unreachable"})
+    except OSError as e:
+        return ProbeResult.err(f"socket error: {e}")
+
+
 def _eval_script_exit_code(params: dict, env: dict[str, str]) -> ProbeResult:
     """Run a script and return its exit code as the probe value.
 
@@ -230,6 +322,7 @@ _PROBES: dict[str, ProbeFn] = {
     "folder_exists":     _eval_folder_exists,
     "file_contains":     _eval_file_contains,
     "process_running":   _eval_process_running,
+    "xplane_dataref":    _eval_xplane_dataref,
     "script_exit_code":  _eval_script_exit_code,
 }
 

@@ -136,6 +136,23 @@ REGISTRY: list[ScriptDef] = [
         content_sh  = _load("disable_custom_scenery.sh"),
     ),
     ScriptDef(
+        # Rule-based scenery_packs.ini generator: switches active
+        # Ortho4XP zoom per tile (Z16 vs Z18) from a named profile in
+        # <Custom Scenery>/scenery_profiles/. Profile comes from the
+        # SCENERY_PROFILE env (per-slave env dict) or argv.
+        # cascade=False: the scenery root is a shared NAS folder, so
+        # exactly one machine should rewrite the ini — review this if
+        # slaves ever get per-machine Custom Scenery folders.
+        name        = "Set Scenery Profile",
+        script_name = "set_scenery_profile",
+        cascade     = False,
+        needs_admin = False,
+        state_probe = None,
+        # .py handles both platforms — stored in content_bat by convention
+        content_bat = _load("set_scenery_profile.py"),
+        content_sh  = "",
+    ),
+    ScriptDef(
         name        = "Block X-Plane Updates",
         script_name = "block_xplane_updates",
         cascade     = True,
@@ -201,6 +218,37 @@ REGISTRY: list[ScriptDef] = [
         content_bat = _load("quit_xplane.py"),
         content_sh  = "",
     ),
+    ScriptDef(
+        name        = "PilotEdge Connect",
+        script_name = "pilotedge_connect",
+        cascade     = True,
+        needs_admin = False,
+        # Show Connect when PE is not connected (invert=True: "present" when
+        # dataref value <= threshold, i.e. PE is disconnected or sim offline).
+        state_probe = {
+            "type":   "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "threshold": 0.5, "invert": True},
+        },
+        pair_with   = "pilotedge_disconnect",
+        content_bat = _load("pilotedge_connect.py"),
+        content_sh  = "",
+    ),
+    ScriptDef(
+        name        = "PilotEdge Disconnect",
+        script_name = "pilotedge_disconnect",
+        cascade     = True,
+        needs_admin = False,
+        # Show Disconnect when PE is connected (value > 0.5 → "present").
+        state_probe = {
+            "type":   "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "threshold": 0.5},
+        },
+        pair_with   = "pilotedge_connect",
+        content_bat = _load("pilotedge_disconnect.py"),
+        content_sh  = "",
+    ),
 ]
 
 REGISTRY_BY_NAME: dict[str, ScriptDef] = {s.script_name: s for s in REGISTRY}
@@ -212,13 +260,19 @@ def seed_registry(store: "sp_data.Store") -> int:
     """Populate `store` with any standard scripts not yet registered.
 
     Idempotent: scripts whose ``script_name`` already exists are left
-    untouched. Returns the number of entries actually added.
+    untouched. Scripts the user has explicitly deleted (in the store's
+    suppressed set) are permanently skipped so they don't reappear on
+    every launch. Returns the number of entries actually added.
     """
-    existing_names = {b.script_name for b in store.batfiles()}
+    existing_names  = {b.script_name for b in store.batfiles()}
+    suppressed      = store.suppressed_registry_scripts()
     added = 0
     for defn in REGISTRY:
         if defn.script_name in existing_names:
             log.debug("registry: skipping existing %s", defn.script_name)
+            continue
+        if defn.script_name in suppressed:
+            log.debug("registry: skipping suppressed %s", defn.script_name)
             continue
         store.add_batfile(
             name         = defn.name,

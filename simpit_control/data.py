@@ -275,6 +275,10 @@ class Store:
                 continue
             self._batfiles[bat.id] = bat
 
+        # script_names the user has explicitly deleted — seed_registry skips these
+        raw_suppressed = bats_raw.get("suppressed_registry_scripts", [])
+        self._suppressed: set[str] = set(raw_suppressed) if isinstance(raw_suppressed, list) else set()
+
     def save(self) -> None:
         """Persist current state to disk. Idempotent."""
         self.paths.ensure()
@@ -285,6 +289,7 @@ class Store:
         _write_json(self.paths.batfiles_file, {
             "version": SCHEMA_VERSION,
             "batfiles": [b.to_dict() for b in self._batfiles.values()],
+            "suppressed_registry_scripts": sorted(self._suppressed),
         })
 
     # ── Slave CRUD ──
@@ -346,8 +351,22 @@ class Store:
         self._batfiles[batfile.id] = batfile
         self.save()
 
-    def delete_batfile(self, batfile_id: str) -> None:
+    def delete_batfile(self, batfile_id: str,
+                       suppress_registry_name: str | None = None) -> None:
+        """Remove a batfile. Pass ``suppress_registry_name`` (the script_name)
+        to permanently prevent seed_registry from re-adding it on next launch."""
         self._batfiles.pop(batfile_id, None)
+        if suppress_registry_name:
+            self._suppressed.add(suppress_registry_name)
+        self.save()
+
+    # ── Registry suppression ──
+    def suppressed_registry_scripts(self) -> set[str]:
+        return set(self._suppressed)
+
+    def unsuppress_registry_script(self, script_name: str) -> None:
+        """Allow seed_registry to re-add a previously suppressed script."""
+        self._suppressed.discard(script_name)
         self.save()
 
     # ── Cascade helpers ──

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`set_scenery_profile`** standard script: rule-based
+  `scenery_packs.ini` generator that switches the active Ortho4XP zoom
+  level per tile (Z16 vs Z18) from named JSON profiles in
+  `<Custom Scenery>/scenery_profiles/` (`vfr`, `ifr`, `hybrid`).
+  Profiles support a default zoom plus overrides by explicit tile or by
+  airport ICAO + tile radius (resolved via X-Plane's Global Airports
+  `apt.dat`, cached). Only ortho lines are touched; timestamped ini
+  backup, atomic write, X-Plane-running guard, `--dry-run`, `--status`,
+  and `--list` modes. Registered with `cascade=False` because the
+  scenery root is a shared NAS folder — revisit if slaves get
+  per-machine Custom Scenery.
+
 ### Planned
 - Streaming EXEC_SCRIPT mode wired through to a Control "view full
   output" dialog.

@@ -151,6 +151,157 @@ class TestRegistry:
             probes.register("dupe_name_test", fn)
 
 
+class TestXplaneDataref:
+    """xplane_dataref probe — tested without a live sim via a fake UDP responder."""
+
+    def _make_rref_response(self, idx: int, value: float) -> bytes:
+        import struct
+        # RREF header (5 bytes) + one 8-byte (idx, float) record
+        header  = b"RREF\x00"
+        payload = struct.pack("<if", idx, value)
+        return header + payload
+
+    def test_connected_returns_present(self):
+        import socket
+        import struct
+        import threading
+
+        # Spin up a fake X-Plane RREF responder on a random port.
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+
+        def _respond():
+            try:
+                server.settimeout(1.0)
+                data, addr = server.recvfrom(2048)
+                # Parse idx from the subscribe packet
+                idx = struct.unpack_from("<i", data, 9)[0]
+                freq = struct.unpack_from("<i", data, 5)[0]
+                if freq > 0:
+                    server.sendto(self._make_rref_response(idx, 1.0), addr)
+            except Exception:
+                pass
+            finally:
+                server.close()
+
+        t = threading.Thread(target=_respond, daemon=True)
+        t.start()
+
+        r = probes.evaluate({
+            "type": "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "host": "127.0.0.1", "port": port, "timeout": 1.0},
+        })
+        t.join(timeout=2.0)
+        assert r.ok and r.value == "present"
+
+    def test_disconnected_returns_absent(self):
+        import socket
+        import struct
+        import threading
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+
+        def _respond():
+            try:
+                server.settimeout(1.0)
+                data, addr = server.recvfrom(2048)
+                idx = struct.unpack_from("<i", data, 9)[0]
+                freq = struct.unpack_from("<i", data, 5)[0]
+                if freq > 0:
+                    server.sendto(self._make_rref_response(idx, 0.0), addr)
+            except Exception:
+                pass
+            finally:
+                server.close()
+
+        t = threading.Thread(target=_respond, daemon=True)
+        t.start()
+
+        r = probes.evaluate({
+            "type": "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "host": "127.0.0.1", "port": port, "timeout": 1.0},
+        })
+        t.join(timeout=2.0)
+        assert r.ok and r.value == "absent"
+
+    def test_invert_flips_result(self):
+        import socket
+        import struct
+        import threading
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+
+        def _respond():
+            try:
+                server.settimeout(1.0)
+                data, addr = server.recvfrom(2048)
+                idx = struct.unpack_from("<i", data, 9)[0]
+                freq = struct.unpack_from("<i", data, 5)[0]
+                if freq > 0:
+                    # value=1.0 (connected); invert should flip to "absent"
+                    server.sendto(self._make_rref_response(idx, 1.0), addr)
+            except Exception:
+                pass
+            finally:
+                server.close()
+
+        t = threading.Thread(target=_respond, daemon=True)
+        t.start()
+
+        r = probes.evaluate({
+            "type": "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "host": "127.0.0.1", "port": port,
+                       "invert": True, "timeout": 1.0},
+        })
+        t.join(timeout=2.0)
+        assert r.ok and r.value == "absent"
+
+    def test_timeout_applies_threshold_invert_logic(self):
+        # When X-Plane is unreachable, the probe treats the value as 0.0 and
+        # applies threshold/invert so toggle pairs resolve correctly:
+        # - disconnect probe (invert=False): 0.0 not > 0.5 → "absent"
+        # - connect probe (invert=True):     0.0 not > 0.5, inverted → "present"
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+
+        # disconnect probe — should be absent when sim offline
+        r = probes.evaluate({
+            "type": "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "host": "127.0.0.1", "port": port,
+                       "threshold": 0.5, "invert": False, "timeout": 0.2},
+        })
+        assert r.ok and r.value == "absent"
+        assert r.detail.get("reason") in ("sim_offline", "unreachable")
+
+        # connect probe (invert=True) — should be present when sim offline
+        r2 = probes.evaluate({
+            "type": "xplane_dataref",
+            "params": {"dataref": "pilotedge/status/connected",
+                       "host": "127.0.0.1", "port": port,
+                       "threshold": 0.5, "invert": True, "timeout": 0.2},
+        })
+        assert r2.ok and r2.value == "present"
+
+    def test_missing_dataref_param_returns_error(self):
+        r = probes.evaluate({"type": "xplane_dataref", "params": {}})
+        assert not r.ok
+
+    def test_known_probe_types_includes_xplane_dataref(self):
+        assert "xplane_dataref" in probes.known_probe_types()
+
+
 class TestResolveParams:
     """resolve_params is the Control-side substitution helper that
     pre-resolves ${VAR} references before STATUS goes on the wire."""

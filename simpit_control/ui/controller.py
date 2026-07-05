@@ -163,7 +163,12 @@ class Controller:
         self.store.update_batfile(batfile)
 
     def delete_batfile(self, batfile_id: str) -> None:
-        self.store.delete_batfile(batfile_id)
+        bat = self.store.get_batfile(batfile_id)
+        # If this is a registry-seeded script, suppress it so seed_registry
+        # does not re-add it on the next app launch.
+        from simpit_control.registry import REGISTRY_BY_NAME
+        suppress = bat.script_name if (bat and bat.script_name in REGISTRY_BY_NAME) else None
+        self.store.delete_batfile(batfile_id, suppress_registry_name=suppress)
 
     # ── Network operations (run on worker thread) ──
     def exec_on_slave(self, slave_id: str, batfile_id: str,

@@ -114,40 +114,49 @@ class BatFileListWidget(tk.Frame):
                  bg=theme.SECTION_BG, fg=theme.SUBTEXT,
                  ).pack(anchor="w", padx=10)
 
-        # Per-slave run buttons (cascade only) + probe value if any
-        if row.cascade and self._slaves:
+        # Per-slave run buttons (cascade only) + probe value if any.
+        # Only show slaves this script actually targets (from the VM's
+        # per-slave dispatch map — untargeted slaves are absent from it).
+        targeted_slaves = [s for s in self._slaves
+                           if s.slave_id in row.batfile_id_per_slave]
+        if row.cascade and targeted_slaves:
             grid = tk.Frame(frame, bg=theme.SECTION_BG)
             grid.pack(fill="x", padx=10, pady=(6, 8))
-            for slave in self._slaves:
+            for slave in targeted_slaves:
                 cell = tk.Frame(grid, bg=theme.PANEL)
                 cell.pack(side="left", padx=(0, 4))
 
                 lbl = tk.Label(cell, text=slave.name, font=theme.FONT_TINY,
-                                bg=theme.PANEL, fg=theme.SUBTEXT,
-                                padx=6, pady=2)
+                               bg=theme.PANEL, fg=theme.SUBTEXT,
+                               padx=6, pady=2)
                 lbl.pack(side="left")
 
-                # Probe value badge if applicable
-                probe_value = row.probe_status_per_slave.get(slave.slave_id,
-                                                                "")
+                # Probe value badge — shown prominently so the operator
+                # can see state at a glance (e.g. "present" = PE connected).
+                probe_value = row.probe_status_per_slave.get(slave.slave_id, "")
                 if row.has_probe and probe_value:
-                    color = (theme.GREEN if probe_value in ("present",
-                                                              "running")
-                             else theme.SUBTEXT)
-                    tk.Label(cell, text=f" {probe_value}",
+                    if probe_value in ("present", "running"):
+                        badge_fg = theme.GREEN
+                        badge_bg = theme.SECTION_BG
+                    elif probe_value == "absent":
+                        badge_fg = theme.SUBTEXT
+                        badge_bg = theme.PANEL
+                    else:
+                        badge_fg = theme.AMBER
+                        badge_bg = theme.PANEL
+                    tk.Label(cell, text=probe_value,
                              font=theme.FONT_TINY,
-                             bg=theme.PANEL, fg=color, padx=2,
-                             ).pack(side="left")
+                             bg=badge_bg, fg=badge_fg,
+                             padx=4, pady=1,
+                             relief="flat",
+                             ).pack(side="left", padx=(2, 0))
 
-                # Run button (disabled if slave offline). For toggle
-                # pairs the label and target script flip per slave
-                # based on its probe value — the row VM precomputes
-                # both maps so the widget stays dumb.
+                # Run button — label and target flip per-slave for toggle pairs.
                 disabled = slave.is_offline
                 btn_label = row.button_label_per_slave.get(slave.slave_id, "")
                 btn_text  = btn_label if btn_label else "▶"
                 target_id = row.batfile_id_per_slave.get(slave.slave_id,
-                                                          row.batfile_id)
+                                                         row.batfile_id)
                 btn = tk.Button(
                     cell, text=btn_text, font=theme.FONT_TINY,
                     bg=theme.BTN_BG if not disabled else theme.GREY,

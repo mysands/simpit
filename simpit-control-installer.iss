@@ -1597,6 +1597,40 @@ begin
   end;
 end;
 
+function ProcRunning(const ExeName: String): Boolean;
+// tasklist always exits 0, so grep its output with find: RC 0 = the
+// process name appeared, RC 1 = it did not.
+var
+  RC: Integer;
+begin
+  Result := Exec('cmd.exe',
+    '/c tasklist /FI "IMAGENAME eq ' + ExeName + '" | find /I "' + ExeName + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+// Stop the running Simpit apps BEFORE the [Files] copy - overwriting a
+// locked exe is what previously forced killing the slave by hand on
+// every upgrade. taskkill /F returns before the process has actually
+// exited, so poll until it is really gone (10 s cap; the copy then
+// fails with Inno's normal retry dialog rather than silently).
+var
+  RC, I: Integer;
+begin
+  Result := '';
+  Exec('taskkill.exe', '/F /IM simpit-slave.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
+  Exec('taskkill.exe', '/F /IM simpit-control.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
+  for I := 1 to 20 do
+  begin
+    if (not ProcRunning('simpit-slave.exe')) and
+       (not ProcRunning('simpit-control.exe')) then
+      Break;
+    Sleep(500);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Key: String;

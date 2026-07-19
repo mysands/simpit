@@ -33,7 +33,8 @@ from .. import data as sp_data
 from .. import poller as sp_poller
 from . import theme
 from .controller import Controller, LinkFactory, RealLinkFactory
-from .dialogs import BatFileDialog, SecuritySetupDialog, SlaveDialog
+from .dialogs import (BatFileDialog, OrthoConfigDialog,
+                      SecuritySetupDialog, SlaveDialog)
 from .net_utils import local_ips
 from .viewmodels import DashboardVM
 from .widgets import BatFileListWidget, LogPanel, SlaveCardWidget
@@ -212,6 +213,9 @@ class App(tk.Tk):
         theme.make_button(hdr, "Sync All", self._sync_all,
                             color=theme.BTN_BG
                             ).pack(side="right", padx=4, pady=8)
+        theme.make_button(hdr, "Ortho Cache", self._open_ortho,
+                            color=theme.BTN_BG
+                            ).pack(side="right", padx=4, pady=8)
         theme.make_button(hdr, "🔑 Security", self._open_security,
                             color=theme.PANEL
                             ).pack(side="right", padx=4, pady=8)
@@ -329,6 +333,15 @@ class App(tk.Tk):
             pass
 
     # ── Header actions ──
+    def _open_ortho(self) -> None:
+        OrthoConfigDialog(
+            self, self.paths.ortho_file,
+            on_save=lambda cfg: self.log_panel.append(
+                f"Ortho agent config saved (zoom Z{cfg.active_zoom}, "
+                f"cache {cfg.cache_max_gb} GB) — local + fleet copy in "
+                f"{cfg.fleet_config_dir}.",
+                "ok"))
+
     def _open_security(self) -> None:
         SecuritySetupDialog(self, self.paths.key_file,
                               on_key_changed=self._on_key_changed)

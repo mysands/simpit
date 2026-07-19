@@ -74,12 +74,14 @@ exclude  = ["tests*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # `-q` keeps CI logs short; verbose mode opt-in via `pytest -v`.
-addopts   = "-q --strict-markers"
+# Live tests are excluded by default; a later CLI `-m live` overrides this.
+addopts   = "-q --strict-markers -m \"not live\""
 
 # Markers used in tests. Declared so pytest doesn't warn.
 markers = [
     "needs_display: tests that require a Tk display (use Xvfb in CI).",
     "slow: integration tests that may take >1s.",
+    "live: on-machine verification against real mount/X-Plane/agent (pytest -m live tests/live).",
 ]
 
 # ── Lint config ──────────────────────────────────────────────────────────

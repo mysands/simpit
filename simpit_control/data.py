@@ -55,6 +55,7 @@ class ControlPaths:
     key_file:       Path
     slaves_file:    Path
     batfiles_file:  Path
+    ortho_file:     Path
 
     @classmethod
     def under(cls, root: Path) -> "ControlPaths":
@@ -64,6 +65,7 @@ class ControlPaths:
             key_file      = root / sp_security.KEY_FILENAME,
             slaves_file   = root / "slaves.json",
             batfiles_file = root / "batfiles.json",
+            ortho_file    = root / "ortho_agent.json",
         )
 
     def ensure(self) -> None:

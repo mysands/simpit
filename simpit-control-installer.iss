@@ -38,6 +38,9 @@ Source: "dist\simpit-slave.exe";   DestDir: "{app}"; Flags: ignoreversion; Compo
 Name: "{group}\Simpit Control";         Filename: "{app}\simpit-control.exe"; Components: control
 Name: "{group}\Simpit Slave";           Filename: "{app}\simpit-slave.exe";   Components: slave
 Name: "{group}\Uninstall Simpit";       Filename: "{uninstallexe}"
+; Gated X-Plane launcher (generated in code, ortho opt-in only): waits
+; for the ortho mount drive to be served before starting the sim.
+Name: "{group}\Launch X-Plane (wait for ortho)"; Filename: "{app}\launch_xplane.bat"; Components: slave; Check: OrthoSelected
 Name: "{userdesktop}\Simpit Control"; Filename: "{app}\simpit-control.exe"; Components: control; Tasks: desktopicon
 
 [Registry]
@@ -46,6 +49,13 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; ValueName: "SimpitSlave"; \
     ValueData: """{app}\simpit-slave.exe"""; \
     Components: slave; Flags: uninsdeletevalue
+; Ortho scenery mount helper at logon (only when the user opted in).
+; Same HKCU Run mechanism as the slave itself: no elevation needed, and
+; the mount console window stays visible so errors are readable.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+    ValueType: string; ValueName: "SimpitOrthoMount"; \
+    ValueData: """{app}\ortho_mount.bat"""; \
+    Components: slave; Check: OrthoSelected; Flags: uninsdeletevalue
 
 [Run]
 ; Control: user-visible "Launch now" checkbox on the finished page.
@@ -59,10 +69,29 @@ var
   IdentityPage: TInputQueryWizardPage;
   XPlanePage:   TInputQueryWizardPage;
   BackupPage:   TInputQueryWizardPage;
+  OrthoOptPage:   TInputOptionWizardPage;
+  OrthoPage:      TInputQueryWizardPage;
+  OrthoMountPage: TInputQueryWizardPage;
+  BackupEnableCheck: TNewCheckBox;
+  BackupBrowseBtn:   TButton;
 
 function IsSlaveInstall: Boolean;
 begin
   Result := WizardIsComponentSelected('slave');
+end;
+
+function GetFileAttributesW(lpFileName: String): Cardinal;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function IsReparsePoint(const Path: String): Boolean;
+// True when Path is a junction or directory symlink. Used so install
+// and uninstall can tell a link apart from a real folder - a real
+// Custom Scenery folder must never be deleted, only renamed.
+var
+  A: Cardinal;
+begin
+  A := GetFileAttributesW(Path);
+  Result := (A <> $FFFFFFFF) and ((A and $400) <> 0);  // FILE_ATTRIBUTE_REPARSE_POINT
 end;
 
 procedure RemoveSlaveFirewallRules;
@@ -80,6 +109,39 @@ begin
   ShellExec('runas', 'powershell.exe', PSCmd, '', SW_HIDE, ewNoWait, ResultCode);
 end;
 
+procedure RestoreCustomScenery;
+// Undo the Custom Scenery redirect made by LinkCustomScenery: remove
+// the link (only if it really is a reparse point - never delete a
+// real folder), then restore what was there first: the ".pre-ortho"
+// folder if one was backed up, else the prior link (e.g. a direct UNC
+// link to the NAS) recorded at install time.
+var
+  Link, Backup, Prior: String;
+  RC: Integer;
+begin
+  Link := '';
+  if not RegQueryStringValue(HKCU, 'Software\Simpit',
+                             'OrthoSceneryLink', Link) then Exit;
+  if Link = '' then Exit;
+  if DirExists(Link) and IsReparsePoint(Link) then
+    RemoveDir(Link);
+  Backup := '';
+  Prior  := '';
+  RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryBackup', Backup);
+  RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryPriorLink', Prior);
+  if (Backup <> '') and DirExists(Backup) and (not DirExists(Link)) then
+    RenameFile(Backup, Link)
+  else if (Prior <> '') and (not DirExists(Link)) then
+    // Recreate the pre-install link. UNC targets need a symlink, and
+    // symlink creation needs elevation - same UAC pattern as install.
+    ShellExec('runas', 'cmd.exe',
+              '/c mklink /D "' + Link + '" "' + Prior + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, RC);
+  RegDeleteValue(HKCU, 'Software\Simpit', 'OrthoSceneryLink');
+  RegDeleteValue(HKCU, 'Software\Simpit', 'OrthoSceneryBackup');
+  RegDeleteValue(HKCU, 'Software\Simpit', 'OrthoSceneryPriorLink');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
@@ -90,7 +152,23 @@ begin
     // does not complain that simpit-slave.exe is locked.
     Exec('taskkill.exe', '/F /IM simpit-slave.exe', '',
          SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Also stop the ortho mount helper if present (window title match
+    // for the console, then rclone itself). Best-effort: nothing to do
+    // on machines that skipped the ortho option.
+    Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Mount*"', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('taskkill.exe', '/F /IM rclone.exe', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(500);
+    // Put X-Plane's Custom Scenery back the way we found it. Done
+    // after the mount is stopped so the link target is quiescent.
+    RestoreCustomScenery;
+    // Remove the code-generated ortho files so the app folder can be
+    // fully deleted (the uninstaller only tracks [Files]-installed ones).
+    DeleteFile(ExpandConstant('{app}\ortho_mount.bat'));
+    DeleteFile(ExpandConstant('{app}\ortho_mount.log'));
+    DeleteFile(ExpandConstant('{app}\launch_xplane.bat'));
+    DeleteFile(ExpandConstant('{app}\rclone.exe'));
     // Remove the inbound firewall rules we added during install.
     RemoveSlaveFirewallRules;
   end;
@@ -383,6 +461,522 @@ begin
     BackupPage.Values[0] := Folder;
 end;
 
+procedure BrowseForCacheDir(Sender: TObject);
+var
+  Folder: String;
+begin
+  Folder := OrthoMountPage.Values[3];
+  if Folder = '' then
+    Folder := 'C:\';
+  if BrowseForFolder('Select the folder for the scenery disk cache ' +
+                     '(pick a drive with room for the whole cache)',
+                     Folder, True) then
+    OrthoMountPage.Values[3] := Folder;
+end;
+
+procedure BackupEnableToggle(Sender: TObject);
+// Grey the backup fields in and out with the opt-in checkbox so the
+// skip state is visible at a glance instead of implied by blank fields.
+begin
+  BackupPage.Edits[0].Enabled := BackupEnableCheck.Checked;
+  BackupPage.Edits[1].Enabled := BackupEnableCheck.Checked;
+  BackupBrowseBtn.Enabled     := BackupEnableCheck.Checked;
+end;
+
+function FirstIPv4(Addresses: Variant): String;
+// Return the first usable IPv4 from a WMI IPAddress string array.
+// Skips IPv6 (contains ':'), loopback and APIPA. The fixed upper
+// bound with try/except is deliberate: PascalScript has no clean way
+// to read a variant array's length, so we probe until indexing throws.
+var
+  J: Integer;
+  S: String;
+begin
+  Result := '';
+  for J := 0 to 9 do
+  begin
+    try
+      S := Addresses[J];
+    except
+      Exit;
+    end;
+    if (Pos(':', S) = 0) and (Pos('127.', S) <> 1) and
+       (Pos('169.254.', S) <> 1) and (S <> '0.0.0.0') then
+    begin
+      Result := S;
+      Exit;
+    end;
+  end;
+end;
+
+function GetLocalIPAddress(): String;
+// Best-effort detection of this machine's IPv4 via WMI. Returns ''
+// when nothing usable is found — the caller must treat the value as
+// a default only, never as authoritative.
+var
+  WbemLocator, WbemServices, ObjectSet: Variant;
+  I: Integer;
+begin
+  Result := '';
+  try
+    WbemLocator := CreateOleObject('WbemScripting.SWbemLocator');
+    WbemServices := WbemLocator.ConnectServer('.', 'root\CIMV2');
+    ObjectSet := WbemServices.ExecQuery(
+      'SELECT IPAddress FROM Win32_NetworkAdapterConfiguration ' +
+      'WHERE IPEnabled = TRUE');
+    for I := 0 to ObjectSet.Count - 1 do
+    begin
+      Result := FirstIPv4(ObjectSet.ItemIndex(I).IPAddress);
+      if Result <> '' then Exit;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
+// ── Ortho scenery cache mount (optional slave feature) ──────────────
+
+function OrthoSelected: Boolean;
+// True when this is a slave install and the user opted in to the ortho
+// cache mount. Used as Check: on the Run-key registry entry and to gate
+// the post-install setup steps.
+begin
+  Result := IsSlaveInstall and (OrthoOptPage <> nil) and OrthoOptPage.Values[0];
+end;
+
+function FindRclone: String;
+// Locate rclone.exe. winget puts it in different places depending on
+// who ran the install: user scope -> <profile>\AppData\...\WinGet\Links,
+// machine scope (elevated shell) -> C:\Program Files\WinGet\Links. A
+// just-finished install also updates PATH only in the registry, not in
+// this already-running process, so the registry PATH is checked too.
+// Empty string when nothing is found.
+var
+  FR: TFindRec;
+  RegPath: String;
+begin
+  // Current user's winget shim (user-scope install).
+  Result := ExpandConstant('{localappdata}\Microsoft\WinGet\Links\rclone.exe');
+  if FileExists(Result) then Exit;
+  // Machine-scope winget shim locations (elevated winget install).
+  Result := 'C:\Program Files\WinGet\Links\rclone.exe';
+  if FileExists(Result) then Exit;
+  Result := 'C:\ProgramData\Microsoft\WinGet\Links\rclone.exe';
+  if FileExists(Result) then Exit;
+  // PATH as this process inherited it.
+  Result := FileSearch('rclone.exe', GetEnv('PATH'));
+  if Result <> '' then Exit;
+  // PATH as the registry has it right now (fresh installs land here).
+  if RegQueryStringValue(HKLM,
+      'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+      'Path', RegPath) then
+  begin
+    Result := FileSearch('rclone.exe', RegPath);
+    if Result <> '' then Exit;
+  end;
+  if RegQueryStringValue(HKCU, 'Environment', 'Path', RegPath) then
+  begin
+    Result := FileSearch('rclone.exe', RegPath);
+    if Result <> '' then Exit;
+  end;
+  // Any other user profile's winget shim (installed under a different
+  // account). Note: using it may hit profile ACLs, which is why
+  // SetupOrthoMount copies the exe into {app} rather than running it
+  // from here.
+  if FindFirst('C:\Users\*', FR) then
+  begin
+    try
+      repeat
+        if (FR.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0) and
+           (FR.Name <> '.') and (FR.Name <> '..') then
+        begin
+          Result := 'C:\Users\' + FR.Name +
+                    '\AppData\Local\Microsoft\WinGet\Links\rclone.exe';
+          if FileExists(Result) then Exit;
+        end;
+      until not FindNext(FR);
+    finally
+      FindClose(FR);
+    end;
+  end;
+  // Common manual locations.
+  Result := 'C:\rclone\rclone.exe';
+  if FileExists(Result) then Exit;
+  Result := ExpandConstant('{commonpf64}\rclone\rclone.exe');
+  if FileExists(Result) then Exit;
+  Result := '';
+end;
+
+procedure BrowseForRclone(Sender: TObject);
+var
+  FileName: String;
+begin
+  FileName := '';
+  if GetOpenFileName('Locate rclone.exe', FileName, '',
+      'rclone.exe|rclone.exe|Programs (*.exe)|*.exe', 'exe') then
+    OrthoMountPage.Values[2] := FileName;
+end;
+
+function WinFspInstalled: Boolean;
+// rclone mount needs the WinFsp driver; its dll location is stable.
+begin
+  Result := FileExists(ExpandConstant('{commonpf32}\WinFsp\bin\winfsp-x64.dll'))
+         or FileExists(ExpandConstant('{commonpf64}\WinFsp\bin\winfsp-x64.dll'));
+end;
+
+function WingetPath: String;
+begin
+  Result := ExpandConstant('{localappdata}\Microsoft\WindowsApps\winget.exe');
+  if not FileExists(Result) then
+    Result := 'winget';
+end;
+
+procedure EnsureOrthoPrereqs;
+// Called when leaving the opt-in page with the box ticked. Offers a
+// winget install for anything missing; if the user declines or the
+// install fails, the option is unticked and setup continues without
+// the ortho mount - prerequisites never block the slave install itself.
+var
+  Missing: String;
+  RC: Integer;
+begin
+  // Re-detect and surface the result on the settings page, so the user
+  // can always SEE which rclone the installer found (and Browse to a
+  // different one if detection picked wrong).
+  if (Trim(OrthoMountPage.Values[2]) = '') or
+     (not FileExists(Trim(OrthoMountPage.Values[2]))) then
+    OrthoMountPage.Values[2] := FindRclone;
+  Missing := '';
+  if OrthoMountPage.Values[2] = '' then Missing := Missing + '  - rclone' + #13#10;
+  if not WinFspInstalled then Missing := Missing + '  - WinFsp' + #13#10;
+  if Missing = '' then Exit;
+  if MsgBox(
+      'The ortho scenery cache needs these programs which are not ' +
+      'installed on this machine:' + #13#10 + #13#10 + Missing + #13#10 +
+      'Install them now with winget?' + #13#10 +
+      '(Windows may ask for administrator permission for WinFsp.)' + #13#10 + #13#10 +
+      'Choose No to skip the ortho cache setup.',
+      mbConfirmation, MB_YESNO) = IDYES then
+  begin
+    if OrthoMountPage.Values[2] = '' then
+    begin
+      Exec(WingetPath,
+           'install --id Rclone.Rclone -e --accept-source-agreements ' +
+           '--accept-package-agreements',
+           '', SW_SHOW, ewWaitUntilTerminated, RC);
+      OrthoMountPage.Values[2] := FindRclone;
+    end;
+    if not WinFspInstalled then
+      Exec(WingetPath,
+           'install --id WinFsp.WinFsp -e --accept-source-agreements ' +
+           '--accept-package-agreements',
+           '', SW_SHOW, ewWaitUntilTerminated, RC);
+  end;
+  if (OrthoMountPage.Values[2] = '') or (not WinFspInstalled) then
+  begin
+    MsgBox(
+      'rclone and/or WinFsp are still missing, so the ortho cache setup ' +
+      'will be skipped.' + #13#10 +
+      'Install them and re-run this installer to add the mount later.',
+      mbInformation, MB_OK);
+    OrthoOptPage.Values[0] := False;
+  end;
+end;
+
+procedure StopPriorOrthoMount;
+// A previous install (or manual setup) may have left the mount helper
+// running. The console window is identifiable by its title; any other
+// rclone.exe on a dedicated slave machine is ours too. Best-effort.
+var
+  RC: Integer;
+begin
+  Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Mount*"',
+       '', SW_HIDE, ewWaitUntilTerminated, RC);
+  Exec('taskkill.exe', '/F /IM rclone.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, RC);
+  Sleep(500);
+end;
+
+procedure SetupOrthoMount;
+// Post-install step: stop any prior helper, write the rclone remote
+// (password is obscured by rclone itself), and generate the mount
+// batch file that the Run key launches at every logon.
+var
+  RclonePath, Drive, Remote, CacheGB, CacheDir, Bat: String;
+  RC: Integer;
+begin
+  RclonePath := Trim(OrthoMountPage.Values[2]);
+  if not FileExists(RclonePath) then RclonePath := FindRclone;
+  if RclonePath = '' then Exit;  // prereq step already warned + unticked
+
+  StopPriorOrthoMount;
+
+  // Copy rclone.exe into the app folder and run the mount from the
+  // copy: the detected exe may live in ANOTHER user's profile (winget
+  // run from an elevated/different account), which the logged-in user
+  // cannot execute at logon. The copy also pins the version.
+  if FileCopy(RclonePath, ExpandConstant('{app}\rclone.exe'), False) then
+    RclonePath := ExpandConstant('{app}\rclone.exe');
+
+  // Skipped when the password is left blank: an existing rclone.conf
+  // on this machine is then reused untouched.
+  if OrthoPage.Values[3] <> '' then
+  begin
+    if (not Exec(RclonePath,
+        'config create randhawanas smb' +
+        ' "host=' + Trim(OrthoPage.Values[0]) + '"' +
+        ' "user=' + Trim(OrthoPage.Values[2]) + '"' +
+        ' "pass=' + OrthoPage.Values[3] + '"',
+        '', SW_HIDE, ewWaitUntilTerminated, RC)) or (RC <> 0) then
+      MsgBox(
+        'Warning: the rclone NAS configuration could not be written ' +
+        '(exit code ' + IntToStr(RC) + ').' + #13#10 +
+        'The mount may fail to authenticate. Run "rclone config" in a ' +
+        'terminal to fix it.',
+        mbError, MB_OK);
+  end;
+
+  Drive    := UpperCase(Trim(OrthoMountPage.Values[0])) + ':';
+  Remote   := 'randhawanas:' + Trim(OrthoPage.Values[1]);
+  CacheGB  := Trim(OrthoMountPage.Values[1]);
+  CacheDir := Trim(OrthoMountPage.Values[3]);
+  // A bare drive root breaks the bat's cmd quoting ("D:\" escapes the
+  // closing quote) and scatters cache files at top level - divert to a
+  // subfolder. Longer paths get any trailing backslash stripped.
+  if Length(CacheDir) <= 3 then
+    CacheDir := AddBackslash(CacheDir) + 'rclone-cache';
+  CacheDir := RemoveBackslashUnlessRoot(CacheDir);
+
+  Bat := '@echo off' + #13#10;
+  Bat := Bat + 'rem SimPit ortho scenery mount - launched at logon via HKCU Run.' + #13#10;
+  Bat := Bat + 'rem Generated by the Simpit installer; edits are overwritten on upgrade.' + #13#10;
+  Bat := Bat + 'rem Cache max-age must stay effectively infinite: 0 would purge' + #13#10;
+  Bat := Bat + 'rem primed scenery within a minute. Size cap is the eviction mechanism.' + #13#10;
+  Bat := Bat + 'title SimPit Ortho Mount (' + Drive + ')' + #13#10;
+  Bat := Bat + 'rem Perf flags: ortho DSFs open thousands of tiny .ter files; long' + #13#10;
+  Bat := Bat + 'rem dir/attr cache + fast-fingerprint avoid an SMB round trip per open.' + #13#10;
+  Bat := Bat + 'rem Cleaner poll stays SHORT (2m): longer intervals let the cache balloon' + #13#10;
+  Bat := Bat + 'rem past the cap, then a giant eviction burst deletes textures X-Plane' + #13#10;
+  Bat := Bat + 'rem still has memory-mapped -> EXCEPTION_IN_PAGE_ERROR crash.' + #13#10;
+  Bat := Bat + '"' + RclonePath + '" mount "' + Remote + '" ' + Drive + ' ^' + #13#10;
+  Bat := Bat + '  --cache-dir "' + CacheDir + '" ^' + #13#10;
+  Bat := Bat + '  --vfs-cache-mode full ^' + #13#10;
+  Bat := Bat + '  --vfs-cache-max-size ' + CacheGB + 'G ^' + #13#10;
+  Bat := Bat + '  --vfs-cache-max-age 8760h ^' + #13#10;
+  Bat := Bat + '  --vfs-cache-poll-interval 2m ^' + #13#10;
+  Bat := Bat + '  --vfs-fast-fingerprint ^' + #13#10;
+  Bat := Bat + '  --dir-cache-time 12h ^' + #13#10;
+  Bat := Bat + '  --attr-timeout 60s ^' + #13#10;
+  Bat := Bat + '  --log-file "' + ExpandConstant('{app}') + '\ortho_mount.log" --log-level INFO ^' + #13#10;
+  Bat := Bat + '  --rc --rc-addr 127.0.0.1:5572 --rc-no-auth' + #13#10;
+  Bat := Bat + 'echo.' + #13#10;
+  Bat := Bat + 'echo Mount exited (code %ERRORLEVEL%). Window stays open so the error is readable.' + #13#10;
+  Bat := Bat + 'pause' + #13#10;
+  SaveStringToFile(ExpandConstant('{app}\ortho_mount.bat'), Bat, False);
+end;
+
+procedure GenerateLaunchXPlaneBat;
+// Gated X-Plane launcher. The rclone process starting is NOT the
+// mount-ready signal: with a large VFS cache it reconciles for minutes
+// before WinFsp attaches the drive letter, and X-Plane launched into
+// that gap loads with no ortho scenery at all (the Custom Scenery
+// symlink target doesn't exist yet). The drive letter only appears
+// once the mount is served, so a readable scenery_packs.ini through
+// the mount drive is the ready gate.
+var
+  Drive, XPFolder, XPExe, Bat: String;
+begin
+  Drive    := UpperCase(Trim(OrthoMountPage.Values[0])) + ':';
+  XPFolder := RemoveBackslashUnlessRoot(Trim(XPlanePage.Values[0]));
+  XPExe    := Trim(XPlanePage.Values[1]);
+  if XPExe = '' then XPExe := 'X-Plane.exe';
+
+  Bat := '@echo off' + #13#10;
+  Bat := Bat + 'rem SimPit X-Plane launcher - gates launch on the ortho mount being ready.' + #13#10;
+  Bat := Bat + 'rem Generated by the Simpit installer; edits are overwritten on upgrade.' + #13#10;
+  Bat := Bat + 'title SimPit X-Plane Launcher' + #13#10;
+  Bat := Bat + 'setlocal' + #13#10;
+  Bat := Bat + 'set "READY_FILE=' + Drive + '\scenery_packs.ini"' + #13#10;
+  Bat := Bat + 'set "XPLANE_EXE=' + XPFolder + '\' + XPExe + '"' + #13#10;
+  Bat := Bat + 'set /a WAITED=0' + #13#10;
+  Bat := Bat + 'if exist "%READY_FILE%" goto ready' + #13#10;
+  Bat := Bat + 'echo Waiting for ortho mount (' + Drive + ') to come up...' + #13#10;
+  Bat := Bat + 'echo (rclone reconciles its cache before attaching the drive; a few minutes is normal)' + #13#10;
+  Bat := Bat + ':wait' + #13#10;
+  Bat := Bat + 'if exist "%READY_FILE%" goto ready' + #13#10;
+  Bat := Bat + 'timeout /t 5 /nobreak >nul' + #13#10;
+  Bat := Bat + 'set /a WAITED+=5' + #13#10;
+  Bat := Bat + 'echo   still waiting... %WAITED%s' + #13#10;
+  Bat := Bat + 'if %WAITED% geq 600 goto timeout' + #13#10;
+  Bat := Bat + 'goto wait' + #13#10;
+  Bat := Bat + ':ready' + #13#10;
+  Bat := Bat + 'echo Ortho mount is ready. Launching X-Plane...' + #13#10;
+  Bat := Bat + 'start "" "%XPLANE_EXE%"' + #13#10;
+  Bat := Bat + 'exit /b 0' + #13#10;
+  Bat := Bat + ':timeout' + #13#10;
+  Bat := Bat + 'echo.' + #13#10;
+  Bat := Bat + 'echo ERROR: mount not ready after 10 minutes.' + #13#10;
+  Bat := Bat + 'echo Is the "SimPit Ortho Mount (' + Drive + ')" window running? (ortho_mount.bat)' + #13#10;
+  Bat := Bat + 'pause' + #13#10;
+  Bat := Bat + 'exit /b 1' + #13#10;
+  SaveStringToFile(ExpandConstant('{app}\launch_xplane.bat'), Bat, False);
+end;
+
+function GetLinkTarget(const Path: String): String;
+// Read where an existing junction/symlink points (PowerShell does the
+// reparse-point parsing for us). Empty string when unreadable.
+var
+  TmpFile, PSCmd: String;
+  RC: Integer;
+  S: AnsiString;
+begin
+  Result := '';
+  TmpFile := ExpandConstant('{tmp}\linktarget.txt');
+  PSCmd := '-NoProfile -NonInteractive -Command "' +
+           '(Get-Item ''' + Path + ''' -Force).Target ' +
+           '| Out-File -Encoding ascii ''' + TmpFile + '''"';
+  Exec('powershell.exe', PSCmd, '', SW_HIDE, ewWaitUntilTerminated, RC);
+  if LoadStringFromFile(TmpFile, S) then
+    Result := Trim(String(S));
+  DeleteFile(TmpFile);
+end;
+
+procedure LinkCustomScenery;
+// Redirect <X-Plane>\Custom Scenery to the mounted ortho drive so
+// X-Plane loads scenery straight from the NAS cache. Whatever was
+// there before is preserved for uninstall: a real folder is renamed to
+// "Custom Scenery.pre-ortho"; an existing link (e.g. a direct UNC link
+// to the NAS from before the cached-mount era) has its target recorded
+// so the uninstaller can recreate it. Breadcrumbs live in HKCU.
+var
+  XPFolder, Scenery, Backup, Drive, PriorTarget: String;
+  RenamedNow, LinkOk: Boolean;
+  RC: Integer;
+begin
+  XPFolder := Trim(XPlanePage.Values[0]);
+  if XPFolder = '' then
+  begin
+    MsgBox(
+      'No X-Plane folder was entered, so Custom Scenery was not linked ' +
+      'to the ortho drive.' + #13#10 +
+      'X-Plane will not see the NAS scenery until you link it manually:' + #13#10 +
+      '  mklink /J "<X-Plane>\Custom Scenery" "<drive>:\"',
+      mbInformation, MB_OK);
+    Exit;
+  end;
+
+  Drive   := UpperCase(Trim(OrthoMountPage.Values[0])) + ':\';
+  Scenery := AddBackslash(XPFolder) + 'Custom Scenery';
+  Backup  := Scenery + '.pre-ortho';
+  RenamedNow  := False;
+  PriorTarget := '';
+
+  if DirExists(Scenery) then
+  begin
+    if IsReparsePoint(Scenery) then
+    begin
+      // An existing link (prior install of ours, or a manual UNC link
+      // straight to the NAS). Removing it deletes only the reparse
+      // point - but capture its target first so uninstall can put the
+      // machine back exactly as found. Ignore links that already point
+      // at our own mount drive (nothing worth restoring).
+      PriorTarget := GetLinkTarget(Scenery);
+      if UpperCase(Copy(PriorTarget, 1, 2)) = UpperCase(Copy(Drive, 1, 2)) then
+        PriorTarget := '';
+      RemoveDir(Scenery);
+    end
+    else if not DirExists(Backup) then
+    begin
+      if not RenameFile(Scenery, Backup) then
+      begin
+        MsgBox(
+          'Could not rename the existing Custom Scenery folder (is ' +
+          'X-Plane running?). The ortho drive was NOT linked.' + #13#10 +
+          'Close X-Plane and re-run this installer to finish the setup.',
+          mbError, MB_OK);
+        Exit;
+      end;
+      RenamedNow := True;
+    end
+    else
+    begin
+      // A real folder AND a backup both exist - a previous setup was
+      // interrupted. Refuse to guess which one the user wants to keep.
+      MsgBox(
+        'Both "Custom Scenery" and "Custom Scenery.pre-ortho" exist in ' +
+        'the X-Plane folder. Resolve this manually (keep one), then ' +
+        're-run this installer. The ortho drive was NOT linked.',
+        mbError, MB_OK);
+      Exit;
+    end;
+  end;
+
+  // Junction first: needs no elevation and WinFsp disk mounts qualify.
+  // The target is written as "X:\." - a bare "X:\" inside quotes would
+  // make cmd treat \" as an escaped quote and mangle the argument;
+  // mklink normalizes the trailing dot back to the drive root.
+  Exec('cmd.exe', '/c mklink /J "' + Scenery + '" "' + Drive + '."',
+       '', SW_HIDE, ewWaitUntilTerminated, RC);
+  LinkOk := IsReparsePoint(Scenery);
+  if not LinkOk then
+  begin
+    // Some volume types refuse junctions - fall back to a directory
+    // symlink, which needs elevation (same UAC pattern as the
+    // firewall rule).
+    ShellExec('runas', 'cmd.exe',
+              '/c mklink /D "' + Scenery + '" "' + Drive + '."',
+              '', SW_HIDE, ewWaitUntilTerminated, RC);
+    LinkOk := IsReparsePoint(Scenery);
+  end;
+
+  if LinkOk then
+  begin
+    RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryLink', Scenery);
+    if DirExists(Backup) then
+      RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryBackup', Backup)
+    else
+      RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryBackup', '');
+    RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoSceneryPriorLink',
+                        PriorTarget);
+  end
+  else
+  begin
+    // Undo the rename we just did so the machine is exactly as before.
+    if RenamedNow and (not DirExists(Scenery)) and DirExists(Backup) then
+      RenameFile(Backup, Scenery);
+    MsgBox(
+      'Could not create the Custom Scenery link (junction and symlink ' +
+      'both failed). The original folder has been restored.' + #13#10 +
+      'You can create the link manually later:' + #13#10 +
+      '  mklink /J "' + Scenery + '" "' + Drive + '"',
+      mbError, MB_OK);
+  end;
+end;
+
+procedure StartOrthoMountNow;
+// Launch the mount immediately (minimized console - visible in the
+// taskbar, not hidden) and confirm the drive letter appears.
+var
+  Drive: String;
+  RC, I: Integer;
+begin
+  ShellExec('open', ExpandConstant('{app}\ortho_mount.bat'), '', '',
+            SW_SHOWMINIMIZED, ewNoWait, RC);
+  Drive := UpperCase(Trim(OrthoMountPage.Values[0])) + ':\';
+  for I := 1 to 20 do
+  begin
+    if DirExists(Drive) then Break;
+    Sleep(1000);
+  end;
+  if not DirExists(Drive) then
+    MsgBox(
+      'The ortho scenery mount did not come up within 20 seconds.' + #13#10 + #13#10 +
+      'Check the "SimPit Ortho Mount" console window in the taskbar ' +
+      'for the error (wrong NAS password is the most common cause).' + #13#10 +
+      'It will retry automatically at the next logon.',
+      mbError, MB_OK);
+end;
+
 procedure InitializeWizard;
 var
   BrowseBtn: TButton;
@@ -416,7 +1010,11 @@ begin
   IdentityPage.Add('Slave display name:', False);
   IdentityPage.Add('Simpit Control IP address:', False);
   IdentityPage.Values[0] := GetComputerNameString;
-  IdentityPage.Values[1] := '';
+  // Default to this machine's own IP: it puts the right subnet in the
+  // field so the user usually only edits the last octet. Detection
+  // failure leaves the field blank; either way it stays editable and
+  // NextButtonClick still validates whatever is entered.
+  IdentityPage.Values[1] := GetLocalIPAddress;
 
   // Page 3: X-Plane configuration
   XPlanePage := CreateInputQueryPage(
@@ -440,33 +1038,128 @@ begin
                     (XPlanePage.Edits[0].Height - BrowseBtn.Height) div 2;
   BrowseBtn.OnClick := @BrowseForXPlaneFolder;
 
-  // Page 4: Backup configuration (optional)
+  // Page 4: Backup configuration (optional, explicit opt-in checkbox)
   BackupPage := CreateInputQueryPage(
     XPlanePage.ID,
     'Backup Configuration (Optional)',
     'Configure X-Plane backup settings',
-    'Leave Backup folder blank to skip backup configuration.');
+    'Tick the box below to set up backups on this machine, or leave it ' +
+    'unticked to skip. You can re-run this installer later to add them.');
   BackupPage.Add('Backup folder (e.g. D:\XPlane-Backup):', False);
   BackupPage.Add('Number of backups to keep (default: 5):', False);
   BackupPage.Values[1] := '5';
-  BrowseBtn := TButton.Create(BackupPage);
-  BrowseBtn.Parent := BackupPage.Surface;
+  BackupBrowseBtn := TButton.Create(BackupPage);
+  BackupBrowseBtn.Parent := BackupPage.Surface;
+  BackupBrowseBtn.Caption := 'Browse...';
+  BackupBrowseBtn.Width := ScaleX(90);
+  BackupBrowseBtn.Height := ScaleY(23);
+  // Shrink the folder edit so the button fits to its right without overlap.
+  BackupPage.Edits[0].Width := BackupPage.Edits[0].Width - ScaleX(98);
+  BackupBrowseBtn.Left := BackupPage.Edits[0].Left + BackupPage.Edits[0].Width + ScaleX(8);
+  BackupBrowseBtn.Top  := BackupPage.Edits[0].Top +
+                    (BackupPage.Edits[0].Height - BackupBrowseBtn.Height) div 2;
+  BackupBrowseBtn.OnClick := @BrowseForBackupFolder;
+  BackupEnableCheck := TNewCheckBox.Create(BackupPage);
+  BackupEnableCheck.Parent := BackupPage.Surface;
+  BackupEnableCheck.Caption := 'Set up X-Plane backups on this machine';
+  BackupEnableCheck.Top := BackupPage.Edits[1].Top + BackupPage.Edits[1].Height + ScaleY(12);
+  BackupEnableCheck.Left := 0;
+  BackupEnableCheck.Width := BackupPage.SurfaceWidth;
+  BackupEnableCheck.Checked := False;
+  BackupEnableCheck.OnClick := @BackupEnableToggle;
+  BackupEnableToggle(BackupEnableCheck);
+
+  // Page 5: Ortho scenery cache opt-in
+  OrthoOptPage := CreateInputOptionPage(
+    BackupPage.ID,
+    'Ortho Scenery Cache (Optional)',
+    'Stream shared ortho scenery from the NAS',
+    'Simpit can mount the shared ortho scenery library from the NAS as a ' +
+    'local drive with a disk cache, so X-Plane streams scenery without ' +
+    'needing a full local copy.' + #13#10 + #13#10 +
+    'Requires rclone and WinFsp - if they are missing, the installer ' +
+    'offers to fetch them with winget.' + #13#10 + #13#10 +
+    'X-Plane''s Custom Scenery folder will be redirected (linked) to the ' +
+    'mounted drive; the original folder is kept and restored on uninstall.' + #13#10 + #13#10 +
+    'Untick to skip. You can re-run this installer later to add it.',
+    False, False);
+  OrthoOptPage.Add('Set up the ortho scenery cache mount on this machine');
+  OrthoOptPage.Values[0] := True;
+
+  // Page 6: Ortho settings (skipped when the box above is unticked)
+  OrthoPage := CreateInputQueryPage(
+    OrthoOptPage.ID,
+    'Ortho Cache Settings',
+    'NAS connection',
+    'Defaults match the standard Simpit fleet. The NAS password is stored ' +
+    '(obscured) only in this machine''s rclone configuration. Leave the ' +
+    'password blank to reuse an existing rclone configuration.');
+  OrthoPage.Add('NAS host name or IP:', False);
+  OrthoPage.Add('Share and folder (share/path):', False);
+  OrthoPage.Add('NAS username:', False);
+  OrthoPage.Add('NAS password:', True);
+  OrthoPage.Values[0] := 'RandhawaNAS';
+  OrthoPage.Values[1] := 'XPlane12/Custom Scenery';
+  OrthoPage.Values[2] := 'mysands';
+  OrthoPage.Values[3] := '';
+
+  // Page 7: Ortho mount settings. Separate page: a single
+  // InputQueryPage can only show ~5 fields before the rest fall below
+  // the visible surface (the cache-size field was invisible with 7).
+  OrthoMountPage := CreateInputQueryPage(
+    OrthoPage.ID,
+    'Ortho Cache Mount Settings',
+    'Local drive, cache size and rclone location',
+    'The scenery share is mounted as a local drive with a disk cache. ' +
+    'Cache size guidance: one full-detail (Z18) tile is roughly 28 GB; ' +
+    '160 GB covers a metro-area hybrid profile with headroom.');
+  OrthoMountPage.Add('Mount drive letter (single letter):', False);
+  OrthoMountPage.Add('Cache size (GB):', False);
+  OrthoMountPage.Add('rclone.exe location (auto-detected; Browse if wrong):', False);
+  OrthoMountPage.Add('Cache folder (put it on a drive with enough free space):', False);
+  OrthoMountPage.Values[0] := 'X';
+  // 160 GB default: 120 GB was still measured thrashing (continuous
+  // evict+refetch pinned at cap) once flights left the WUS/ZLA Z16
+  // bbox, where hybrid falls back to full-nationwide Z18 (see
+  // set_scenery_profile.py coverage note). 50 GB thrashed even worse.
+  OrthoMountPage.Values[1] := '160';
+  OrthoMountPage.Values[2] := FindRclone;
+  BrowseBtn := TButton.Create(OrthoMountPage);
+  BrowseBtn.Parent := OrthoMountPage.Surface;
   BrowseBtn.Caption := 'Browse...';
   BrowseBtn.Width := ScaleX(90);
   BrowseBtn.Height := ScaleY(23);
-  // Shrink the folder edit so the button fits to its right without overlap.
-  BackupPage.Edits[0].Width := BackupPage.Edits[0].Width - ScaleX(98);
-  BrowseBtn.Left := BackupPage.Edits[0].Left + BackupPage.Edits[0].Width + ScaleX(8);
-  BrowseBtn.Top  := BackupPage.Edits[0].Top +
-                    (BackupPage.Edits[0].Height - BrowseBtn.Height) div 2;
-  BrowseBtn.OnClick := @BrowseForBackupFolder;
+  OrthoMountPage.Edits[2].Width := OrthoMountPage.Edits[2].Width - ScaleX(98);
+  BrowseBtn.Left := OrthoMountPage.Edits[2].Left + OrthoMountPage.Edits[2].Width + ScaleX(8);
+  BrowseBtn.Top  := OrthoMountPage.Edits[2].Top +
+                    (OrthoMountPage.Edits[2].Height - BrowseBtn.Height) div 2;
+  BrowseBtn.OnClick := @BrowseForRclone;
+  // Cache folder: default is rclone's own default location so existing
+  // machines keep their warm cache after an upgrade.
+  OrthoMountPage.Values[3] := ExpandConstant('{localappdata}\rclone');
+  BrowseBtn := TButton.Create(OrthoMountPage);
+  BrowseBtn.Parent := OrthoMountPage.Surface;
+  BrowseBtn.Caption := 'Browse...';
+  BrowseBtn.Width := ScaleX(90);
+  BrowseBtn.Height := ScaleY(23);
+  OrthoMountPage.Edits[3].Width := OrthoMountPage.Edits[3].Width - ScaleX(98);
+  BrowseBtn.Left := OrthoMountPage.Edits[3].Left + OrthoMountPage.Edits[3].Width + ScaleX(8);
+  BrowseBtn.Top  := OrthoMountPage.Edits[3].Top +
+                    (OrthoMountPage.Edits[3].Height - BrowseBtn.Height) div 2;
+  BrowseBtn.OnClick := @BrowseForCacheDir;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := not IsSlaveInstall and
-            ((PageID = KeyPage.ID) or (PageID = IdentityPage.ID) or
-             (PageID = XPlanePage.ID) or (PageID = BackupPage.ID));
+  if not IsSlaveInstall then
+    Result := (PageID = KeyPage.ID) or (PageID = IdentityPage.ID) or
+              (PageID = XPlanePage.ID) or (PageID = BackupPage.ID) or
+              (PageID = OrthoOptPage.ID) or (PageID = OrthoPage.ID) or
+              (PageID = OrthoMountPage.ID)
+  else
+    // Ortho settings only matter when the user opted in earlier.
+    Result := ((PageID = OrthoPage.ID) or (PageID = OrthoMountPage.ID))
+              and not OrthoOptPage.Values[0];
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -476,6 +1169,8 @@ var
   i: Integer;
   c: Char;
   valid: Boolean;
+  CacheDir, CacheDrive: String;
+  FreeB, TotalB: Int64;
 begin
   Result := True;
   if not IsSlaveInstall then Exit;
@@ -532,6 +1227,90 @@ begin
         'The IP is shown in the Simpit Control title bar.',
         mbError, MB_OK);
       Result := False;
+    end;
+  end;
+
+  // Leaving the ortho opt-in page with the box ticked: check (and offer
+  // to install) rclone + WinFsp. Never blocks - it unticks on failure.
+  if CurPageID = OrthoOptPage.ID then
+  begin
+    if OrthoOptPage.Values[0] then
+      EnsureOrthoPrereqs;
+  end;
+
+  // Validate ortho settings.
+  if CurPageID = OrthoPage.ID then
+  begin
+    if (Trim(OrthoPage.Values[0]) = '') or (Trim(OrthoPage.Values[1]) = '') or
+       (Trim(OrthoPage.Values[2]) = '') then
+    begin
+      MsgBox('NAS host, share/folder and username must all be filled in.',
+             mbError, MB_OK);
+      Result := False;
+    end;
+  end;
+
+  // Validate ortho mount settings.
+  if CurPageID = OrthoMountPage.ID then
+  begin
+    IP := UpperCase(Trim(OrthoMountPage.Values[0]));  // reuse IP as scratch
+    if (Length(IP) <> 1) or (IP[1] < 'D') or (IP[1] > 'Z') then
+    begin
+      MsgBox('Mount drive letter must be a single letter D-Z (not a ' +
+             'drive that is already in use).', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    i := StrToIntDef(Trim(OrthoMountPage.Values[1]), -1);
+    if (i < 1) or (i > 2000) then
+    begin
+      MsgBox('Cache size must be a whole number of GB between 1 and 2000.',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if not FileExists(Trim(OrthoMountPage.Values[2])) then
+    begin
+      MsgBox('rclone.exe was not found at the given location.' + #13#10 +
+             'Click Browse and select rclone.exe (winget installs it under' + #13#10 +
+             '<profile>\AppData\Local\Microsoft\WinGet\Links, or' + #13#10 +
+             'C:\Program Files\WinGet\Links for machine-wide installs).',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    // Cache folder: the drive must exist and should have room for the
+    // whole cache (plus slack for overshoot between cleaner passes).
+    CacheDir := Trim(OrthoMountPage.Values[3]);
+    if CacheDir = '' then
+    begin
+      MsgBox('Please enter a cache folder (or keep the default).',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    CacheDrive := ExtractFileDrive(CacheDir);
+    if (CacheDrive = '') or (not DirExists(CacheDrive + '\')) then
+    begin
+      MsgBox('The cache folder must be on an existing local drive ' +
+             '(e.g. D:\rclone-cache). Drive "' + CacheDrive + '" was not found.',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if GetSpaceOnDisk64(CacheDrive + '\', FreeB, TotalB) then
+    begin
+      // i still holds the validated cache size in GB from above.
+      if FreeB < Int64(i) * 1073741824 then
+        if MsgBox('Drive ' + CacheDrive + ' has ' +
+               IntToStr(FreeB div 1073741824) + ' GB free, but the cache ' +
+               'is set to ' + IntToStr(i) + ' GB. The cache will not fit ' +
+               'and X-Plane may crash when the disk fills.' + #13#10 + #13#10 +
+               'Continue anyway?', mbConfirmation, MB_YESNO) = IDNO then
+        begin
+          Result := False;
+          Exit;
+        end;
     end;
   end;
 end;
@@ -608,7 +1387,13 @@ begin
       ControlIP  := Trim(IdentityPage.Values[1]);
       XPlaneFolder := Trim(XPlanePage.Values[0]);
       XPlaneExe    := Trim(XPlanePage.Values[1]);
-      BackupFolder := Trim(BackupPage.Values[0]);
+      // Backups are an explicit opt-in: an unticked checkbox means no
+      // backup env vars land in slave-config.json even if the fields
+      // hold leftover text.
+      if BackupEnableCheck.Checked then
+        BackupFolder := Trim(BackupPage.Values[0])
+      else
+        BackupFolder := '';
       BackupKeep   := Trim(BackupPage.Values[1]);
 
       if not DirExists(DataDir) then
@@ -647,11 +1432,25 @@ begin
       // Done here (after key + config are written, before ssDone launch)
       // so the agent is firewalled before it starts listening.
       AddSlaveFirewallRules;
+
+      // Ortho scenery cache: stop any prior mount helper, write the
+      // rclone remote and generate ortho_mount.bat (Run key added by
+      // the [Registry] section, gated on the same OrthoSelected check),
+      // then redirect X-Plane's Custom Scenery onto the mount drive.
+      if OrthoSelected then
+      begin
+        SetupOrthoMount;
+        GenerateLaunchXPlaneBat;
+        LinkCustomScenery;
+      end;
     end;
 
     // ssDone: launch slave silently then ask user to verify in Control.
     if CurStep = ssDone then
     begin
+      if OrthoSelected then
+        StartOrthoMountNow;
+
       Exec(ExpandConstant('{app}\simpit-slave.exe'), '', '', SW_HIDE, ewNoWait, ResultCode);
 
       // Give the slave time to start and receive a poll from Control.

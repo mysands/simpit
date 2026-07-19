@@ -1050,7 +1050,10 @@ begin
   Result := '';
   P := Pos('"' + Key + '": "', Json);
   if P = 0 then Exit;
-  P := P + Length(Key) + 6;
+  // Skip the matched '"key": "' literal: 1 quote + key + '": ' + 1
+  // quote = Length(Key) + 5 (a +6 here once ate the first character
+  // of every value - 'C:\X-Plane 12.1' became ':\X-Plane 12.1').
+  P := P + Length(Key) + 5;
   E := P;
   while E <= Length(Json) do
   begin
@@ -1423,6 +1426,25 @@ begin
         '"' + IP + '" is not a valid IP address.' + #13#10 +
         'Enter four numbers separated by dots, e.g. 192.168.1.100.' + #13#10 + #13#10 +
         'The IP is shown in the Simpit Control title bar.',
+        mbError, MB_OK);
+      Result := False;
+    end;
+  end;
+
+  // Validate the X-Plane folder: blank is allowed (no X-Plane on this
+  // machine), but a non-blank folder must actually exist - a typo or a
+  // bad prefill here would otherwise flow silently into
+  // slave-config.json, the Custom Scenery link and the launch bat.
+  if CurPageID = XPlanePage.ID then
+  begin
+    if (Trim(XPlanePage.Values[0]) <> '') and
+       (not DirExists(Trim(XPlanePage.Values[0]))) then
+    begin
+      MsgBox(
+        'The X-Plane folder does not exist:' + #13#10 +
+        '  ' + Trim(XPlanePage.Values[0]) + #13#10 + #13#10 +
+        'Fix the path (or leave it blank if X-Plane is not installed ' +
+        'on this machine).',
         mbError, MB_OK);
       Result := False;
     end;

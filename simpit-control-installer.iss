@@ -39,8 +39,11 @@ Name: "{group}\Simpit Control";         Filename: "{app}\simpit-control.exe"; Co
 Name: "{group}\Simpit Slave";           Filename: "{app}\simpit-slave.exe";   Components: slave
 Name: "{group}\Uninstall Simpit";       Filename: "{uninstallexe}"
 ; Gated X-Plane launcher (generated in code, ortho opt-in only): waits
-; for the ortho mount drive to be served before starting the sim.
-Name: "{group}\Launch X-Plane (wait for ortho)"; Filename: "{app}\launch_xplane.bat"; Components: slave; Check: OrthoSelected
+; for the ortho mount drive to be served before starting the sim. On a
+; sim machine this is the everyday way to start X-Plane, so it goes on
+; the desktop too, borrowing the X-Plane exe's own icon.
+Name: "{group}\Launch X-Plane (wait for ortho)"; Filename: "{app}\launch_xplane.bat"; IconFilename: "{code:XPlaneExePath}"; Components: slave; Check: OrthoSelected
+Name: "{userdesktop}\Launch X-Plane"; Filename: "{app}\launch_xplane.bat"; IconFilename: "{code:XPlaneExePath}"; Components: slave; Check: OrthoSelected
 Name: "{userdesktop}\Simpit Control"; Filename: "{app}\simpit-control.exe"; Components: control; Tasks: desktopicon
 
 [Registry]
@@ -209,6 +212,17 @@ end;
 function KeyFilePath: String;
 begin
   Result := ExpandConstant('{userappdata}\simpit-slave\simpit.key');
+end;
+
+function XPlaneExePath(Param: String): String;
+// Icon source for the launcher shortcuts ({code:} in [Icons]). Falls
+// back to the generated bat itself when no X-Plane path was entered,
+// which gives the shortcut the default console icon instead of a
+// broken-icon placeholder.
+begin
+  Result := AddBackslash(Trim(XPlanePage.Values[0])) + Trim(XPlanePage.Values[1]);
+  if (Trim(XPlanePage.Values[0]) = '') or (not FileExists(Result)) then
+    Result := ExpandConstant('{app}\launch_xplane.bat');
 end;
 
 function LogFilePath: String;

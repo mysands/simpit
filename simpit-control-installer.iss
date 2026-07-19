@@ -109,6 +109,21 @@ begin
   ShellExec('runas', 'powershell.exe', PSCmd, '', SW_HIDE, ewNoWait, ResultCode);
 end;
 
+procedure KillOurRcloneMount;
+// Stop only rclone processes whose command line references our NAS
+// remote - a blanket "taskkill /IM rclone.exe" would take down any
+// unrelated rclone job (e.g. a backup sync) running on the machine.
+var
+  RC: Integer;
+begin
+  Exec('powershell.exe',
+       '-NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ' +
+       'Where-Object { $_.Name -eq ''rclone.exe'' -and ' +
+       '$_.CommandLine -like ''*randhawanas*'' } | ' +
+       'ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"',
+       '', SW_HIDE, ewWaitUntilTerminated, RC);
+end;
+
 procedure RestoreCustomScenery;
 // Undo the Custom Scenery redirect made by LinkCustomScenery: remove
 // the link (only if it really is a reparse point - never delete a
@@ -145,6 +160,7 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
+  CacheDir: String;
 begin
   if CurUninstallStep = usUninstall then
   begin
@@ -153,13 +169,29 @@ begin
     Exec('taskkill.exe', '/F /IM simpit-slave.exe', '',
          SW_HIDE, ewWaitUntilTerminated, ResultCode);
     // Also stop the ortho mount helper if present (window title match
-    // for the console, then rclone itself). Best-effort: nothing to do
-    // on machines that skipped the ortho option.
+    // for the console, then our rclone mount). Best-effort: nothing to
+    // do on machines that skipped the ortho option.
     Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Mount*"', '',
          SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec('taskkill.exe', '/F /IM rclone.exe', '',
-         SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    KillOurRcloneMount;
     Sleep(500);
+    // The VFS cache can hold 100+ GB, but re-priming it takes hours -
+    // ask instead of silently leaving (or deleting) it. Keeping it
+    // makes a later reinstall start warm; the breadcrumb is cleared
+    // only on deletion so the next install can still find the cache.
+    if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoCacheDir', CacheDir) and
+       (CacheDir <> '') and DirExists(CacheDir) then
+      if MsgBox(
+          'Delete the ortho scenery disk cache?' + #13#10 +
+          '  ' + CacheDir + #13#10 + #13#10 +
+          'It can be very large (tens to hundreds of GB), but re-downloading ' +
+          'and re-priming it takes hours. Choose No to keep it for a future ' +
+          'reinstall.',
+          mbConfirmation, MB_YESNO) = IDYES then
+      begin
+        DelTree(CacheDir, True, True, True);
+        RegDeleteValue(HKCU, 'Software\Simpit', 'OrthoCacheDir');
+      end;
     // Put X-Plane's Custom Scenery back the way we found it. Done
     // after the mount is stopped so the link target is quiescent.
     RestoreCustomScenery;
@@ -555,6 +587,11 @@ var
   FR: TFindRec;
   RegPath: String;
 begin
+  // A previous install's pinned copy - the one place a prior SimPit
+  // setup GUARANTEED a working rclone, and it survives even if the
+  // original winget/manual install it was copied from is gone.
+  Result := AddBackslash(WizardDirValue) + 'rclone.exe';
+  if FileExists(Result) then Exit;
   // Current user's winget shim (user-scope install).
   Result := ExpandConstant('{localappdata}\Microsoft\WinGet\Links\rclone.exe');
   if FileExists(Result) then Exit;
@@ -685,15 +722,14 @@ end;
 
 procedure StopPriorOrthoMount;
 // A previous install (or manual setup) may have left the mount helper
-// running. The console window is identifiable by its title; any other
-// rclone.exe on a dedicated slave machine is ours too. Best-effort.
+// running. The console window is identifiable by its title; beyond
+// that, only rclone processes mounting our remote are stopped.
 var
   RC: Integer;
 begin
   Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Mount*"',
        '', SW_HIDE, ewWaitUntilTerminated, RC);
-  Exec('taskkill.exe', '/F /IM rclone.exe',
-       '', SW_HIDE, ewWaitUntilTerminated, RC);
+  KillOurRcloneMount;
   Sleep(500);
 end;
 
@@ -702,7 +738,7 @@ procedure SetupOrthoMount;
 // (password is obscured by rclone itself), and generate the mount
 // batch file that the Run key launches at every logon.
 var
-  RclonePath, Drive, Remote, CacheGB, CacheDir, Bat: String;
+  RclonePath, Drive, Remote, CacheGB, CacheDir, PriorCache, Bat: String;
   RC: Integer;
 begin
   RclonePath := Trim(OrthoMountPage.Values[2]);
@@ -714,9 +750,11 @@ begin
   // Copy rclone.exe into the app folder and run the mount from the
   // copy: the detected exe may live in ANOTHER user's profile (winget
   // run from an elevated/different account), which the logged-in user
-  // cannot execute at logon. The copy also pins the version.
-  if FileCopy(RclonePath, ExpandConstant('{app}\rclone.exe'), False) then
-    RclonePath := ExpandConstant('{app}\rclone.exe');
+  // cannot execute at logon. The copy also pins the version. Skipped
+  // when the detected exe IS the pinned copy from a previous install.
+  if CompareText(RclonePath, ExpandConstant('{app}\rclone.exe')) <> 0 then
+    if FileCopy(RclonePath, ExpandConstant('{app}\rclone.exe'), False) then
+      RclonePath := ExpandConstant('{app}\rclone.exe');
 
   // Skipped when the password is left blank: an existing rclone.conf
   // on this machine is then reused untouched.
@@ -773,6 +811,30 @@ begin
   Bat := Bat + 'echo Mount exited (code %ERRORLEVEL%). Window stays open so the error is readable.' + #13#10;
   Bat := Bat + 'pause' + #13#10;
   SaveStringToFile(ExpandConstant('{app}\ortho_mount.bat'), Bat, False);
+
+  // A previous install may have cached into a different folder. That
+  // cache is just re-downloadable scenery, but it can be huge - offer
+  // to reclaim the space rather than orphaning it silently.
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoCacheDir', PriorCache) and
+     (PriorCache <> '') and (CompareText(PriorCache, CacheDir) <> 0) and
+     DirExists(PriorCache) then
+    if MsgBox(
+        'The previous install kept its scenery cache in:' + #13#10 +
+        '  ' + PriorCache + #13#10 + #13#10 +
+        'The new cache folder is:' + #13#10 +
+        '  ' + CacheDir + #13#10 + #13#10 +
+        'Delete the old cache folder to free its disk space?',
+        mbConfirmation, MB_YESNO) = IDYES then
+      DelTree(PriorCache, True, True, True);
+
+  // Breadcrumbs: the next installer run prefills its pages from these
+  // instead of asking for everything from scratch.
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoHost',     Trim(OrthoPage.Values[0]));
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoShare',    Trim(OrthoPage.Values[1]));
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoUser',     Trim(OrthoPage.Values[2]));
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoDrive',    UpperCase(Trim(OrthoMountPage.Values[0])));
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoCacheGB',  CacheGB);
+  RegWriteStringValue(HKCU, 'Software\Simpit', 'OrthoCacheDir', CacheDir);
 end;
 
 procedure GenerateLaunchXPlaneBat;
@@ -977,6 +1039,138 @@ begin
       mbError, MB_OK);
 end;
 
+function JsonStr(const Json, Key: String): String;
+// Minimal extractor for the flat "key": "value" pairs this installer's
+// own EscapeJson writes (only \\ and \" are escaped). Empty when the
+// key is absent. Not a general JSON parser - do not point it at
+// arbitrary files.
+var
+  P, E: Integer;
+begin
+  Result := '';
+  P := Pos('"' + Key + '": "', Json);
+  if P = 0 then Exit;
+  P := P + Length(Key) + 6;
+  E := P;
+  while E <= Length(Json) do
+  begin
+    if Json[E] = '\' then
+    begin
+      Result := Result + Json[E + 1];
+      E := E + 2;
+    end
+    else if Json[E] = '"' then
+      Break
+    else
+    begin
+      Result := Result + Json[E];
+      E := E + 1;
+    end;
+  end;
+end;
+
+procedure PrefillFromPriorInstall;
+// A re-run should never ask for what a previous install already knows:
+// the security key comes back from simpit.key, and identity / X-Plane /
+// backup settings from slave-config.json. Every field stays editable -
+// these are defaults, not locks.
+var
+  Cfg: AnsiString;
+  Json, S: String;
+begin
+  if LoadStringFromFile(KeyFilePath, Cfg) then
+    if Trim(String(Cfg)) <> '' then
+      KeyPage.Values[0] := Trim(String(Cfg));
+
+  if not LoadStringFromFile(
+      ExpandConstant('{userappdata}\simpit-slave\slave-config.json'), Cfg) then
+    Exit;
+  Json := String(Cfg);
+  S := JsonStr(Json, 'name');          if S <> '' then IdentityPage.Values[0] := S;
+  S := JsonStr(Json, 'control_host');  if S <> '' then IdentityPage.Values[1] := S;
+  S := JsonStr(Json, 'XPLANE_FOLDER'); if S <> '' then XPlanePage.Values[0]  := S;
+  S := JsonStr(Json, 'XPLANE_EXE');    if S <> '' then XPlanePage.Values[1]  := S;
+  S := JsonStr(Json, 'BACKUP_FOLDER');
+  if S <> '' then
+  begin
+    BackupPage.Values[0] := S;
+    BackupEnableCheck.Checked := True;
+    BackupEnableToggle(BackupEnableCheck);
+  end;
+  S := JsonStr(Json, 'BACKUP_KEEP');   if S <> '' then BackupPage.Values[1] := S;
+end;
+
+procedure PrefillOrthoFromPrior;
+// Ortho pages: prefill from the HKCU breadcrumbs SetupOrthoMount now
+// writes. Installs that predate the breadcrumbs get drive letter,
+// share, cache size and cache folder recovered from the mount bat the
+// previous install generated. If an rclone remote is already saved,
+// say so on the password field instead of silently expecting the user
+// to know that blank means "keep".
+var
+  S, Bat, Remote: String;
+  Cfg: AnsiString;
+  P, E: Integer;
+begin
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoHost', S) and (S <> '') then
+    OrthoPage.Values[0] := S;
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoShare', S) and (S <> '') then
+    OrthoPage.Values[1] := S;
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoUser', S) and (S <> '') then
+    OrthoPage.Values[2] := S;
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoDrive', S) and (S <> '') then
+    OrthoMountPage.Values[0] := S;
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoCacheGB', S) and (S <> '') then
+    OrthoMountPage.Values[1] := S;
+  if RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoCacheDir', S) and (S <> '') then
+    OrthoMountPage.Values[3] := S;
+
+  if (not RegQueryStringValue(HKCU, 'Software\Simpit', 'OrthoCacheGB', S)) or (S = '') then
+    if LoadStringFromFile(AddBackslash(WizardDirValue) + 'ortho_mount.bat', Cfg) then
+    begin
+      Bat := String(Cfg);
+      P := Pos(' mount "', Bat);
+      if P > 0 then
+      begin
+        P := P + 8;
+        E := P;
+        while (E <= Length(Bat)) and (Bat[E] <> '"') do E := E + 1;
+        Remote := Copy(Bat, P, E - P);      // e.g. randhawanas:XPlane12/Custom Scenery
+        P := Pos(':', Remote);
+        if (P > 0) and (P < Length(Remote)) then
+          OrthoPage.Values[1] := Copy(Remote, P + 1, Length(Remote));
+        // Drive letter follows the closing quote and a space.
+        if E + 2 <= Length(Bat) then
+          OrthoMountPage.Values[0] := Copy(Bat, E + 2, 1);
+      end;
+      P := Pos('--vfs-cache-max-size ', Bat);
+      if P > 0 then
+      begin
+        P := P + 21;
+        S := '';
+        while (P <= Length(Bat)) and (Bat[P] >= '0') and (Bat[P] <= '9') do
+        begin
+          S := S + Bat[P];
+          P := P + 1;
+        end;
+        if S <> '' then OrthoMountPage.Values[1] := S;
+      end;
+      P := Pos('--cache-dir "', Bat);
+      if P > 0 then
+      begin
+        P := P + 13;
+        E := P;
+        while (E <= Length(Bat)) and (Bat[E] <> '"') do E := E + 1;
+        if E > P then OrthoMountPage.Values[3] := Copy(Bat, P, E - P);
+      end;
+    end;
+
+  if LoadStringFromFile(ExpandConstant('{userappdata}\rclone\rclone.conf'), Cfg) then
+    if Pos('[randhawanas]', String(Cfg)) > 0 then
+      OrthoPage.PromptLabels[3].Caption :=
+        'NAS password (leave blank to keep the saved one):';
+end;
+
 procedure InitializeWizard;
 var
   BrowseBtn: TButton;
@@ -1147,6 +1341,10 @@ begin
   BrowseBtn.Top  := OrthoMountPage.Edits[3].Top +
                     (OrthoMountPage.Edits[3].Height - BrowseBtn.Height) div 2;
   BrowseBtn.OnClick := @BrowseForCacheDir;
+
+  // Re-runs default every page to what the previous install chose.
+  PrefillFromPriorInstall;
+  PrefillOrthoFromPrior;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;

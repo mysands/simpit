@@ -29,6 +29,9 @@ Name: "slave";   Description: "Simpit Slave";   Types: slave;   Flags: exclusive
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Components: control
+; Auto-start X-Plane at logon on sim machines: the gated launcher waits
+; for the ortho mount, so boot -> mount -> X-Plane needs no clicks.
+Name: "xplanestartup"; Description: "Start &X-Plane automatically at logon (waits for the ortho mount)"; GroupDescription: "Startup:"; Components: slave; Check: OrthoSelected
 
 [Files]
 Source: "dist\simpit-control.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: control
@@ -44,6 +47,7 @@ Name: "{group}\Uninstall Simpit";       Filename: "{uninstallexe}"
 ; the desktop too, borrowing the X-Plane exe's own icon.
 Name: "{group}\Launch X-Plane (wait for ortho)"; Filename: "{app}\launch_xplane.bat"; IconFilename: "{code:XPlaneExePath}"; Components: slave; Check: OrthoSelected
 Name: "{userdesktop}\Launch X-Plane"; Filename: "{app}\launch_xplane.bat"; IconFilename: "{code:XPlaneExePath}"; Components: slave; Check: OrthoSelected
+Name: "{userstartup}\Launch X-Plane"; Filename: "{app}\launch_xplane.bat"; IconFilename: "{code:XPlaneExePath}"; Components: slave; Tasks: xplanestartup; Check: OrthoSelected
 Name: "{userdesktop}\Simpit Control"; Filename: "{app}\simpit-control.exe"; Components: control; Tasks: desktopicon
 
 [Registry]

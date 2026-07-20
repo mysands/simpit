@@ -238,6 +238,54 @@ class TestBatFileListWidget:
         btn.invoke()
         assert called == [("s1", "b1")]
 
+    def _make_rows(self, n):
+        return [vm.BatFileRowVM.build(
+                    sp_data.BatFile(id=f"b{i}", name=f"Script {i}",
+                                    script_name=f"s{i}", cascade=False,
+                                    content="echo"),
+                    [], {})
+                for i in range(n)]
+
+    def _show(self, root, widget, geometry):
+        """Map the window for real — scrollbar visibility and canvas
+        heights are geometry facts that don't exist while withdrawn."""
+        widget.pack(fill="both", expand=True)
+        root.geometry(geometry)
+        root.deiconify()
+        root.update()
+
+    def test_many_rows_scroll_into_view(self, root):
+        """Rows beyond the visible height are reachable by scrolling —
+        the panel used to clip everything below the window edge."""
+        widget = BatFileListWidget(root, slaves=[], rows=self._make_rows(30))
+        self._show(root, widget, "500x300")          # too short for 30 rows
+        canvas = widget._canvas
+        assert canvas is not None
+        assert widget._vsb.winfo_ismapped()          # scrollbar appeared
+        assert canvas.yview()[1] < 1.0               # content overflows
+        canvas.yview_moveto(1.0)
+        root.update()
+        assert canvas.yview()[1] == pytest.approx(1.0)   # bottom reachable
+
+    def test_scrollbar_hidden_when_content_fits(self, root):
+        widget = BatFileListWidget(root, slaves=[], rows=self._make_rows(2))
+        self._show(root, widget, "500x600")
+        assert not widget._vsb.winfo_ismapped()
+
+    def test_update_data_keeps_scroll_position(self, root):
+        """The dashboard rebuilds this list every poll tick; the view
+        must not snap back to the top each time."""
+        rows = self._make_rows(30)
+        widget = BatFileListWidget(root, slaves=[], rows=rows)
+        self._show(root, widget, "500x300")
+        widget._canvas.yview_moveto(0.5)
+        root.update()
+        before = widget._canvas.yview()[0]
+        assert before > 0.0
+        widget.update_data([], rows)
+        root.update()
+        assert widget._canvas.yview()[0] == pytest.approx(before, abs=0.05)
+
     def _all_text(self, widget):
         out = []
         def walk(w):

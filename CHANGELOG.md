@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scenery root is a shared NAS folder — revisit if slaves get
   per-machine Custom Scenery.
 
+### Fixed
+- Control's SCRIPTS panel now scrolls: with many scripts registered,
+  rows below the window edge were simply unreachable. Rows live in a
+  canvas with an auto-hiding scrollbar and mouse-wheel support, and
+  the scroll position survives the dashboard's periodic rebuilds
+  (previously it would have snapped to the top every poll tick).
+
 ### Planned
 - Streaming EXEC_SCRIPT mode wired through to a Control "view full
   output" dialog.

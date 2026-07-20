@@ -7,7 +7,14 @@ which slaves currently have scenery enabled, which have updates blocked,
 etc.).
 
 Like the slave card, this widget binds to view-models and re-renders
-when given a fresh list. No internal state.
+when given a fresh list. The only state carried across re-renders is
+the scroll position: the dashboard rebuilds this list on every poll
+tick, and without restoring the previous fraction the view would snap
+back to the top every few seconds.
+
+Rows live inside a Canvas-hosted frame so the list scrolls when it
+outgrows the window (tk frames don't scroll by themselves); the
+scrollbar auto-hides while everything fits.
 """
 from __future__ import annotations
 
@@ -36,17 +43,24 @@ class BatFileListWidget(tk.Frame):
         self._on_edit   = on_edit
         self._on_delete = on_delete
         self._on_add    = on_add
+        self._canvas: tk.Canvas | None = None
         self._build()
 
     # ── Public ──
     def update_data(self, slaves: list[SlaveCardVM],
                      rows: list[BatFileRowVM]) -> None:
-        """Re-render with a new dashboard slice."""
+        """Re-render with a new dashboard slice, keeping scroll position."""
+        fraction = self._canvas.yview()[0] if self._canvas else 0.0
         self._slaves = slaves
         self._rows = rows
+        self._unbind_wheel()      # handlers reference soon-dead widgets
         for w in self.winfo_children():
             w.destroy()
+        self._canvas = None
         self._build()
+        if self._canvas is not None and fraction > 0.0:
+            self.update_idletasks()          # scrollregion must exist first
+            self._canvas.yview_moveto(fraction)
 
     # ── Build ──
     def _build(self) -> None:
@@ -68,12 +82,72 @@ class BatFileListWidget(tk.Frame):
                      pady=20).pack()
             return
 
+        # Scrollable row region: Canvas + inner frame + auto-hide bar.
+        container = tk.Frame(self, bg=theme.BG)
+        container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(container, bg=theme.BG, highlightthickness=0,
+                           bd=0, yscrollincrement=24)
+        vsb = tk.Scrollbar(container, orient="vertical",
+                           command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        # vsb is packed on demand by _sync_scrollbar.
+        self._canvas = canvas
+        self._vsb = vsb
+
+        inner = tk.Frame(canvas, bg=theme.BG)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_change(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
+            self._sync_scrollbar(inner, canvas, vsb)
+
+        inner.bind("<Configure>", _on_inner_change)
+        canvas.bind("<Configure>",
+                    lambda e: (canvas.itemconfigure(window, width=e.width),
+                               self._sync_scrollbar(inner, canvas, vsb)))
+        # Wheel events land on whichever child is under the cursor, so
+        # bind globally only while the pointer is over the list.
+        canvas.bind("<Enter>", lambda e: self._bind_wheel(inner, canvas))
+        canvas.bind("<Leave>", lambda e: self._unbind_wheel())
+
         # One row per batfile
         for row in self._rows:
-            self._draw_row(row)
+            self._draw_row(inner, row)
 
-    def _draw_row(self, row: BatFileRowVM) -> None:
-        frame = tk.Frame(self, bg=theme.SECTION_BG, bd=0,
+    # ── Scrolling ──
+    def _sync_scrollbar(self, inner: tk.Frame, canvas: tk.Canvas,
+                        vsb: tk.Scrollbar) -> None:
+        """Show the scrollbar only while the rows overflow the canvas."""
+        if inner.winfo_reqheight() > canvas.winfo_height():
+            if not vsb.winfo_ismapped():
+                vsb.pack(side="right", fill="y")
+        elif vsb.winfo_ismapped():
+            vsb.pack_forget()
+            canvas.yview_moveto(0.0)
+
+    def _bind_wheel(self, inner: tk.Frame, canvas: tk.Canvas) -> None:
+        def _wheel(event):
+            if inner.winfo_reqheight() <= canvas.winfo_height():
+                return                       # nothing to scroll
+            if getattr(event, "num", None) == 4:       # X11 wheel up
+                step = -1
+            elif getattr(event, "num", None) == 5:     # X11 wheel down
+                step = 1
+            else:                                      # Windows/mac delta
+                step = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+            canvas.yview_scroll(step, "units")
+        self.bind_all("<MouseWheel>", _wheel)
+        self.bind_all("<Button-4>", _wheel)
+        self.bind_all("<Button-5>", _wheel)
+
+    def _unbind_wheel(self) -> None:
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _draw_row(self, parent: tk.Widget, row: BatFileRowVM) -> None:
+        frame = tk.Frame(parent, bg=theme.SECTION_BG, bd=0,
                           highlightthickness=0)
         frame.pack(fill="x", pady=(0, 2), padx=2)
 

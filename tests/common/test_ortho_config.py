@@ -1,12 +1,12 @@
-"""Tests for simpit_control.ortho_config (pure logic, no UI, no network)."""
+"""Tests for simpit_common.ortho_config (pure logic, no UI, no network)."""
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from simpit_control import ortho_config
-from simpit_control.ortho_config import OrthoAgentConfig
+from simpit_common import ortho_config
+from simpit_common.ortho_config import OrthoAgentConfig
 
 
 def test_defaults_are_valid():

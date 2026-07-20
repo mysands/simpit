@@ -12,7 +12,7 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Callable
 
-from ... import ortho_config
+from simpit_common import ortho_config
 from .. import theme
 
 

@@ -1,10 +1,13 @@
-"""Ortho cache agent configuration owned by SimPit Control.
+"""Ortho cache agent configuration (single loader, shared fleet-wide).
 
 Control edits the master copy (``ortho_agent.json`` in the Control data
-dir) via the Ortho Cache dialog; distribution to each machine follows
-the same path as slave config. The file is JSON, not TOML, per RULES.md
-v0.6 §6 rule 8 (machine-distributed, script-rewritten config — the
-Z16/Z18 scenery toggle rewrites ``active_zoom`` in place).
+dir) via the Ortho Cache dialog; the per-machine ortho cache agent
+(:mod:`simpit_ortho_agent`) loads its effective config through
+:func:`load_effective`. Lives in ``simpit_common`` so both sides import
+the one loader (moved here from ``simpit_control`` when the agent
+landed). The file is JSON, not TOML, per RULES.md v0.6 §6 rule 8
+(machine-distributed, script-rewritten config — the Z16/Z18 scenery
+toggle rewrites ``active_zoom`` in place).
 
 The schema mirrors the ortho agent handoff. ``rclone_cmd`` is never
 edited directly: it is derived from the remote target, mount drive,
@@ -63,6 +66,17 @@ class OrthoAgentConfig:
     def mount_drive(self) -> str:
         """Return the mount point as rclone expects it (e.g. "X:")."""
         return self.mount_root.rstrip("/\\")
+
+    def scenery_root(self) -> Path:
+        """The mounted Custom Scenery level the agent works under.
+
+        ``remote_rel_root`` is empty when the mount points straight at
+        Custom Scenery (the standard setup); otherwise it is the
+        mount-relative path down to it.
+        """
+        root = Path(self.mount_root)
+        rel = self.remote_rel_root.strip("/\\")
+        return root / rel if rel else root
 
     def build_rclone_cmd(self) -> list[str]:
         """Derive the rclone mount command from the current settings.

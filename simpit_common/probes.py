@@ -221,7 +221,8 @@ def _eval_xplane_dataref(params: dict, env: dict[str, str]) -> ProbeResult:
     Returns "present", "absent", or "unavailable" (X-Plane not responding).
     """
     import socket
-    import struct
+
+    from . import xp_rref
 
     dataref = params.get("dataref")
     if not isinstance(dataref, str) or not dataref:
@@ -236,8 +237,7 @@ def _eval_xplane_dataref(params: dict, env: dict[str, str]) -> ProbeResult:
     _IDX      = 42  # arbitrary tag echoed back by X-Plane in RREF responses
 
     def _rref(freq: int) -> bytes:
-        return struct.pack("<4sxii400s", b"RREF", freq, _IDX,
-                          dataref.encode("latin-1"))
+        return xp_rref.request_packet(freq, _IDX, dataref)
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -269,22 +269,19 @@ def _eval_xplane_dataref(params: dict, env: dict[str, str]) -> ProbeResult:
                                            value="present" if present else "absent",
                                            detail={"dataref": dataref,
                                                    "reason": "unreachable"})
-                    if data[:4] != b"RREF":
-                        continue
-                    payload = data[5:]
-                    for off in range(0, len(payload) - 7, 8):
-                        i, value = struct.unpack_from("<if", payload, off)
-                        if i == _IDX:
-                            try:
-                                s.sendto(_rref(0), (host, port))
-                            except OSError:
-                                pass
-                            present = (value > threshold) != invert
-                            return ProbeResult(
-                                ok=True,
-                                value="present" if present else "absent",
-                                detail={"dataref": dataref, "raw": value},
-                            )
+                    values = xp_rref.decode_response(data)
+                    if _IDX in values:
+                        value = values[_IDX]
+                        try:
+                            s.sendto(_rref(0), (host, port))
+                        except OSError:
+                            pass
+                        present = (value > threshold) != invert
+                        return ProbeResult(
+                            ok=True,
+                            value="present" if present else "absent",
+                            detail={"dataref": dataref, "raw": value},
+                        )
             except OSError:
                 present = (0.0 > threshold) != invert
                 return ProbeResult(ok=True,

@@ -49,7 +49,8 @@ DEFAULTS: dict = {
 
 # Verified on RandhawaNAS 2026-07-05: {y16}_{x16}_{provider}{zoom}.dds,
 # y first, coords floored to multiples of 16 at that atlas's own zoom.
-ATLAS_RE = re.compile(r"^(\d+)_(\d+)_([A-Z]+)(\d{1,2})\.dds$")
+# Providers are case-mixed: BI (Bing) and Arc (ArcGIS, live 2026-07-19).
+ATLAS_RE = re.compile(r"^(\d+)_(\d+)_([A-Za-z]+?)(\d{1,2})\.dds$")
 
 POSITION_DATAREFS = {
     1: "sim/flightmodel/position/latitude",

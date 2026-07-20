@@ -125,7 +125,10 @@ class SceneryIndex:
         for label in (self.active_zoom, other):
             name = tilemath.dsf_folder_name(lat_floor, lon_floor, label)
             index = self._index_for(name)
-            if index is not None:
+            # A folder with no parseable atlases counts as absent, so a
+            # stripped/odd folder under one label can't shadow a real
+            # one under the other.
+            if index is not None and index.atlases:
                 return name, index
         return None
 

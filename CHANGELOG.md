@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-machine Custom Scenery.
 
 ### Fixed
+- Ortho agent: atlas filenames with mixed-case providers now parse —
+  the NAS holds ArcGIS atlases (`…_Arc18.dds`, e.g. all 2,543 in
+  `Z18_+34-119`/KVNY) alongside Bing's `BI`, and the all-uppercase
+  provider regex indexed such folders as empty, leaving the agent
+  idle there. Found live at KVNY. A folder with no parseable atlases
+  also no longer shadows the other zoom label's folder. Live-verified
+  in flight out of KVNY: 8/8 chain checks on the LOCAL RREF feed —
+  external visuals serve live position/groundspeed/track matching the
+  master, so the localhost default needs no per-machine master IP.
 - Control's SCRIPTS panel now scrolls: with many scripts registered,
   rows below the window edge were simply unreachable. Rows live in a
   canvas with an auto-hiding scrollbar and mouse-wheel support, and

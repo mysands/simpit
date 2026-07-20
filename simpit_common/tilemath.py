@@ -30,8 +30,10 @@ import re
 # Atlases are 16×16 blocks of slippy tiles at their own zoom.
 ATLAS_GRID = 16
 
-# {y16}_{x16}_{provider}{zoom}.dds — provider observed: BI (Bing).
-ATLAS_RE = re.compile(r"^(\d+)_(\d+)_([A-Z]+)(\d{1,2})\.dds$")
+# {y16}_{x16}_{provider}{zoom}.dds — providers observed on the NAS:
+# BI (Bing) and Arc (ArcGIS, e.g. 103824_44416_Arc18.dds in Z18_+34-119,
+# found live 2026-07-19), so the provider match must be case-mixed.
+ATLAS_RE = re.compile(r"^(\d+)_(\d+)_([A-Za-z]+?)(\d{1,2})\.dds$")
 
 # Meters per degree of latitude (and of longitude at the equator).
 _M_PER_DEG = 111_320.0

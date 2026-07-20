@@ -86,7 +86,7 @@ fields (master IP/port, mount root) need an agent restart.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | per-machine kill switch (overlay-friendly) |
-| `master_ip` / `xp_udp_port` | `127.0.0.1` / `49000` | X-Plane master RREF endpoint |
+| `master_ip` / `xp_udp_port` | `127.0.0.1` / `49000` | RREF endpoint. The localhost default is the recommended setting on every machine: external-visual instances serve live position/gs/hpath identical to the master's (verified in flight 2026-07-19), so no cross-machine UDP or per-machine IP config is needed |
 | `mount_root` | `X:/` | rclone mount drive |
 | `remote_rel_root` | `""` | mount-relative path down to Custom Scenery |
 | `cache_max_gb` | `160` | mount cache cap (460 on CENTERLEFT) |
@@ -132,9 +132,11 @@ and index code: `pytest -m live tests/live -v`.
 * **`mount X:/ did not appear within 60s`** — rclone is probably still
   reconciling its cache (minutes at hundreds of GB). The agent keeps
   retrying; check the "SimPit Ortho Mount" window / `ortho_mount.log`.
-* **State stuck in `SIM_OFFLINE`** — no RREF from `master_ip:49000`.
-  X-Plane must be running on the master with UDP allowed through the
-  firewall/rasrouter; `verify_live.py` prints the exact failure.
+* **State stuck in `SIM_OFFLINE`** — no RREF from the configured
+  endpoint (default: this machine's own X-Plane on `127.0.0.1:49000`).
+  X-Plane must be running locally — or, if `master_ip` points at
+  another machine, UDP must be allowed through the firewall/rasrouter;
+  `verify_live.py` prints the exact failure.
 * **Atlases keep getting evicted** (`cache-write` check fails, or
   primed files vanish) — the mount's `--vfs-cache-max-age` is wrong
   (must be huge, e.g. `8760h`; `0` purges immediately) or the cap is

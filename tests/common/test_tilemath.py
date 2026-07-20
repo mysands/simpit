@@ -61,11 +61,17 @@ def test_parse_atlas_filename_round_trip():
         assert tm.atlas_filename(x16, y16, zoom) == name
 
 
+def test_parse_atlas_filename_mixed_case_provider():
+    """ArcGIS atlases (found live in Z18_+34-119) have a mixed-case
+    provider — the parse must not assume all-uppercase 'BI'."""
+    assert tm.parse_atlas_filename("103824_44416_Arc18.dds") == \
+        (44416, 103824, 18)
+
+
 @pytest.mark.parametrize("name", [
     "terrain_1234.ter",               # per-atlas terrain files
     "24096_19600_BI16.png",           # wrong extension
     "24096_19600.dds",                # no provider+zoom
-    "24096_19600_bi16.dds",           # provider is upper-case on the NAS
     "not_an_atlas.dds",
 ])
 def test_parse_atlas_filename_rejects_non_atlases(name):

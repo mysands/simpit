@@ -77,6 +77,17 @@ def test_scenery_index_falls_back_to_other_label(tmp_path):
     assert found is not None and found[0] == "zOrtho4XP_Z16_+47-123"
 
 
+def test_scenery_index_skips_atlasless_folder(tmp_path):
+    """A preferred-label folder with no parseable atlases must not
+    shadow a populated folder under the other label (KVNY regression:
+    an unparsed Z18 folder left the agent idling on an empty index)."""
+    make_folder(tmp_path, "zOrtho4XP_Z18_+34-119", ["readme.txt"])
+    make_folder(tmp_path, "zOrtho4XP_Z16_+34-119", ["25952_11104_BI16.dds"])
+    scenery = ai.SceneryIndex(tmp_path, active_zoom=18)
+    found = scenery.folder_for_square(34, -119)
+    assert found is not None and found[0] == "zOrtho4XP_Z16_+34-119"
+
+
 def test_scenery_index_caches_missing_squares_only_when_root_up(tmp_path):
     """Water squares cache as None; a downed mount caches nothing."""
     root = tmp_path / "mnt"

@@ -141,6 +141,41 @@ class TestBuild:
         mds.main([str(dest), "--dry-run"])
         assert not dest.exists()
 
+    def test_degenerate_folder_gets_empty_dummy(self, scenery):
+        """Aborted Ortho4XP builds (only root junk, no subdirs) exist on
+        the NAS; they must yield an empty marked folder, not a crash."""
+        src, dest = scenery
+        bare = src / "zOrtho4XP_Z16_+35-110"
+        bare.mkdir()
+        (bare / "Data+35-110.apt").write_bytes(b"junk")
+        assert mds.main([str(dest)]) == 0
+        dummy = dest / "zOrtho4XP_Z16_+35-110"
+        assert {p.name for p in dummy.iterdir()} == {mds.MARKER_NAME}
+        counts = json.loads((dummy / mds.MARKER_NAME).read_text())["counts"]
+        assert counts == {"dsf": 0, "ter": 0, "dds": 0, "extra": 0}
+
+    def test_one_failed_folder_does_not_abort_run(self, scenery,
+                                                  monkeypatch, capsys):
+        src, dest = scenery
+        real = mds.build_folder
+
+        def flaky(src_folder, dummy_folder, dds_bytes):
+            if src_folder.name.endswith("Z16_+42-073"):
+                raise OSError("SMB hiccup")
+            return real(src_folder, dummy_folder, dds_bytes)
+
+        monkeypatch.setattr(mds, "build_folder", flaky)
+        assert mds.main([str(dest)]) == 1
+        out = capsys.readouterr()
+        assert "FAILED" in out.out and "Z16_+42-073" in out.err
+        # The healthy folder completed; the failed one has no marker,
+        # so a plain re-run retries exactly it.
+        assert (dest / "zOrtho4XP_Z18_+42-073" / mds.MARKER_NAME).exists()
+        assert not (dest / "zOrtho4XP_Z16_+42-073" / mds.MARKER_NAME).exists()
+        monkeypatch.setattr(mds, "build_folder", real)
+        assert mds.main([str(dest)]) == 0
+        assert (dest / "zOrtho4XP_Z16_+42-073" / mds.MARKER_NAME).exists()
+
     def test_only_filter(self, scenery):
         src, dest = scenery
         mds.main([str(dest), "--only", "zOrtho4XP_Z16_*"])

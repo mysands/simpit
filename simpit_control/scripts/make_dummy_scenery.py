@@ -216,6 +216,10 @@ def build_folder(src_folder: Path, dummy_folder: Path,
         The marker's ``counts`` dict for the folder.
     """
     src = list_sources(src_folder)
+    # Explicitly, so degenerate source folders (no DSF/terrain/textures
+    # at all — aborted Ortho4XP builds exist on the NAS) still get an
+    # empty dummy folder + marker instead of failing the marker write.
+    dummy_folder.mkdir(parents=True, exist_ok=True)
     made_dirs: set[Path] = set()
     for rel in src.dsfs + src.ters + src.extras + src.ddses:
         parent = dummy_folder / rel.parent
@@ -353,20 +357,34 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(names) - len(todo)}  to build: {len(todo)}")
 
     built = 0
+    failed: list[str] = []
     totals = {"dsf": 0, "ter": 0, "dds": 0, "extra": 0}
     if args.dry_run:
         for n in todo:
             print(f"  would build {n}")
     elif todo:
-        def one(name: str) -> dict[str, int]:
-            return build_folder(source / name, dest / name, dds_bytes)
+        # One sick folder (vanished mid-build, SMB hiccup) must not
+        # abort an hours-long run: record it, keep going, report at the
+        # end. Failed folders carry no marker, so a re-run retries them.
+        def one(name: str) -> dict[str, int] | Exception:
+            try:
+                return build_folder(source / name, dest / name, dds_bytes)
+            except OSError as exc:
+                return exc
 
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            done = 0
             for name, counts in zip(todo, pool.map(one, todo), strict=True):
+                done += 1
+                if isinstance(counts, Exception):
+                    failed.append(name)
+                    print(f"  [{done}/{len(todo)}] {name}: FAILED — {counts}",
+                          flush=True)
+                    continue
                 built += 1
                 for k in totals:
                     totals[k] += counts[k]
-                print(f"  [{built}/{len(todo)}] {name}: "
+                print(f"  [{done}/{len(todo)}] {name}: "
                       f"dsf={counts['dsf']} ter={counts['ter']} "
                       f"dds={counts['dds']} extra={counts['extra']}",
                       flush=True)
@@ -380,6 +398,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[make_dummy_scenery] {mode}: built {built} folder(s) "
           f"(dsf={totals['dsf']} ter={totals['ter']} dds={totals['dds']} "
           f"extra={totals['extra']}), pruned {pruned}")
+    if failed:
+        print(f"  FAILED ({len(failed)}): {', '.join(failed)}\n"
+              "  (no markers written — re-run to retry these)",
+              file=sys.stderr)
+        return 1
     return 0
 
 

@@ -70,9 +70,12 @@ script-rewritten config). Single loader:
 
 1. local cached copy (bootstrap — also tells the agent where the fleet
    folder is),
-2. fleet base `\\RandhawaNAS\XPlane12\simpit\ortho_agent.json`
-   (written by Control's Ortho Cache dialog; **not yet created** —
-   until then every machine runs on its local copy),
+2. fleet base `<fleet_config_dir>\ortho_agent.json` (written by
+   Control's Ortho Cache dialog). `fleet_config_dir` is site-specific
+   and defaults to **empty = fleet distribution off**, so a setup
+   without a NAS never probes the network; on this fleet set it to
+   `\\RandhawaNAS\XPlane12\simpit` (a sibling of the scenery share,
+   outside Custom Scenery so X-Plane's scan never sees it),
 3. per-machine overlay `ortho_agent.<hostname>.json` (lowercase, only
    the keys present override).
 
@@ -96,6 +99,7 @@ fields (master IP/port, mount root) need an agent restart.
 | `poll_hz` | `1` | position sample rate / engine tick |
 | `touch_interval_seconds` | `60` | keep-warm re-touch cadence |
 | `heading_offset_deg` | `0` | reserved (v2 side-view bias — defined, not applied) |
+| `fleet_config_dir` | `""` | folder of the authoritative fleet copy + overlays; empty = local-only |
 
 ## Examples
 

@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the per-machine `cache_max_gb` instead of a hardcoded cap.
 
 ### Changed
+- `fleet_config_dir` no longer defaults to a site-specific UNC path:
+  empty (the new default) means fleet distribution is off and the
+  agent/Control work purely from the local `ortho_agent.json` without
+  touching the network. Set the folder in Control's Ortho Cache dialog
+  to enable fleet-wide config.
 - `ortho_config` moved from `simpit_control` to `simpit_common` so
   Control's dialog and the ortho agent share the single loader; adds
   `scenery_root()`. Import paths updated (`simpit_control` kept no

@@ -103,6 +103,18 @@ def test_cache_dir_flag_derivation():
     assert cmd[i + 1] == r"D:\rclone-cache"
 
 
+def test_default_fleet_dir_is_empty_and_local_only(tmp_path):
+    """No baked-in site path: out of the box, fleet distribution is off
+    and everything works purely on the local file (no network probes)."""
+    cfg = OrthoAgentConfig()
+    assert cfg.fleet_config_dir == ""
+    assert ortho_config.fleet_path(cfg) is None
+    local = tmp_path / "ortho_agent.json"
+    assert ortho_config.save_fleet(cfg, local) is None      # no warning
+    assert ortho_config.load_or_default(local) == cfg
+    assert ortho_config.load_effective(local, hostname="RIGHT") == cfg
+
+
 def test_save_fleet_writes_local_and_nas_copy(tmp_path):
     """save_fleet lands both copies and returns no warning on success."""
     local = tmp_path / "local" / "ortho_agent.json"

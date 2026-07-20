@@ -58,9 +58,14 @@ class OrthoAgentConfig:
     touch_interval_seconds: float = 60.0
     heading_offset_deg:     float = 0.0
     # Fleet distribution: the folder (UNC or local) holding the
-    # authoritative copy every machine reads. Deliberately OUTSIDE
-    # Custom Scenery so X-Plane's scenery scan never sees it.
-    fleet_config_dir:       str   = r"\\RandhawaNAS\XPlane12\simpit"
+    # authoritative copy every machine reads. Site-specific, so there
+    # is NO baked-in default: empty means fleet distribution is off and
+    # each machine runs purely on its local file (also avoids probing a
+    # dead UNC path on every load for setups without a NAS). Set it in
+    # Control's Ortho Cache dialog / the installer; keep it OUTSIDE
+    # Custom Scenery so X-Plane's scenery scan never sees it (e.g.
+    # \\YourNAS\XPlane12\simpit next to the scenery share).
+    fleet_config_dir:       str   = ""
 
     # ── Derivation ───────────────────────────────────────────────────────
     def mount_drive(self) -> str:
@@ -154,8 +159,6 @@ class OrthoAgentConfig:
             errors.append(
                 f"Heading offset must be -180..180°, got "
                 f"{self.heading_offset_deg}.")
-        if not self.fleet_config_dir.strip():
-            errors.append("Fleet config folder must not be empty.")
         if errors:
             raise ValueError("\n".join(errors))
 
@@ -242,16 +245,23 @@ def save(config: OrthoAgentConfig, path: Path) -> None:
 FLEET_BASENAME = "ortho_agent.json"
 
 
-def fleet_path(config: OrthoAgentConfig) -> Path:
-    """Authoritative fleet config path derived from the config itself."""
-    return Path(config.fleet_config_dir) / FLEET_BASENAME
+def fleet_path(config: OrthoAgentConfig) -> Path | None:
+    """Authoritative fleet config path, or None when distribution is off.
+
+    An empty ``fleet_config_dir`` means "no fleet folder" — the config
+    is site-specific (someone else's rig has a different NAS or none at
+    all), so there is deliberately no baked-in default path.
+    """
+    folder = config.fleet_config_dir.strip()
+    return Path(folder) / FLEET_BASENAME if folder else None
 
 
 def save_fleet(config: OrthoAgentConfig, local_path: Path) -> str | None:
-    """Persist the config locally and to the fleet folder on the NAS.
+    """Persist the config locally and, if configured, to the fleet folder.
 
     The local save happens first and must succeed; the fleet save is
     best-effort so an unreachable NAS never loses the user's edits.
+    With no fleet folder configured, only the local copy is written.
 
     Args:
         config: settings to persist.
@@ -265,11 +275,14 @@ def save_fleet(config: OrthoAgentConfig, local_path: Path) -> str | None:
         ValueError: from validate(); nothing is written in that case.
     """
     save(config, local_path)
+    target = fleet_path(config)
+    if target is None:
+        return None
     try:
-        save(config, fleet_path(config))
+        save(config, target)
     except OSError as exc:
         return (f"Saved locally, but could not write the fleet copy to "
-                f"{fleet_path(config)}: {exc}")
+                f"{target}: {exc}")
     return None
 
 
@@ -278,8 +291,10 @@ def load_effective(local_path: Path, hostname: str | None = None) -> OrthoAgentC
 
     Load order: local copy (bootstrap — tells us where the fleet folder
     is), then the fleet base file if reachable, then the per-machine
-    overlay. Each stage only refines the previous one, so a machine with
-    no NAS access still runs on its cached local copy.
+    overlay. Each stage only refines the previous one, so a machine
+    with no NAS access still runs on its cached local copy — and a
+    setup with no fleet folder configured (empty ``fleet_config_dir``)
+    skips the fleet stages entirely, never touching the network.
 
     Args:
         local_path: this machine's local ortho_agent.json.
@@ -291,12 +306,14 @@ def load_effective(local_path: Path, hostname: str | None = None) -> OrthoAgentC
     import socket
     merged = _read_json(local_path) or {}
     cfg = OrthoAgentConfig.from_dict(merged)
-    base = _read_json(fleet_path(cfg))
+    base_path = fleet_path(cfg)
+    if base_path is None:
+        return cfg
+    base = _read_json(base_path)
     if base is not None:
         merged.update(base)
     host = (hostname or socket.gethostname()).lower()
-    overlay = _read_json(
-        Path(cfg.fleet_config_dir) / f"ortho_agent.{host}.json")
+    overlay = _read_json(base_path.parent / f"ortho_agent.{host}.json")
     if overlay is not None:
         merged.update(overlay)
     return OrthoAgentConfig.from_dict(merged)

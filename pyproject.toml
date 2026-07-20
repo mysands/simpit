@@ -58,8 +58,9 @@ dev = [
 ]
 
 [project.scripts]
-simpit-control = "simpit_control.__main__:main"
-simpit-slave   = "simpit_slave.__main__:main"
+simpit-control     = "simpit_control.__main__:main"
+simpit-slave       = "simpit_slave.__main__:main"
+simpit-ortho-agent = "simpit_ortho_agent.__main__:main"
 
 [project.urls]
 Homepage      = "https://github.com/mysands/simpit"
@@ -67,7 +68,8 @@ Homepage      = "https://github.com/mysands/simpit"
 
 [tool.setuptools.packages.find]
 where    = ["."]
-include  = ["simpit_common*", "simpit_control*", "simpit_slave*"]
+include  = ["simpit_common*", "simpit_control*", "simpit_slave*",
+            "simpit_ortho_agent*"]
 exclude  = ["tests*"]
 
 # ── Test config ──────────────────────────────────────────────────────────
@@ -107,7 +109,8 @@ ignore = [
 # ── Coverage ─────────────────────────────────────────────────────────────
 [tool.coverage.run]
 branch = true
-source = ["simpit_common", "simpit_control", "simpit_slave"]
+source = ["simpit_common", "simpit_control", "simpit_slave",
+          "simpit_ortho_agent"]
 omit   = ["*/tests/*", "*/__main__.py"]
 
 [tool.coverage.report]

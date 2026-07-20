@@ -81,3 +81,4 @@ desktop.ini
 # every build is reproducible.
 !simpit-control.spec
 !simpit-slave.spec
+!simpit-ortho-agent.spec

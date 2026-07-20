@@ -198,11 +198,12 @@ For the full threat model and remediation steps, see
 
 ## Architecture
 
-| Package           | Role                                                       |
-|-------------------|------------------------------------------------------------|
-| `simpit_common`   | Wire protocol, HMAC, OS abstraction, probe engine         |
-| `simpit_slave`    | Headless agent — UDP/TCP server, executor, inspector      |
-| `simpit_control`  | Store, slave_link, poller, mock_slave, GUI                |
+| Package              | Role                                                       |
+|----------------------|------------------------------------------------------------|
+| `simpit_common`      | Wire protocol, HMAC, OS abstraction, probes, tilemath     |
+| `simpit_slave`       | Headless agent — UDP/TCP server, executor, inspector      |
+| `simpit_control`     | Store, slave_link, poller, mock_slave, GUI                |
+| `simpit_ortho_agent` | Per-machine ortho scenery cache warmer ([docs](docs/ORTHO_AGENT.md)) |
 
 For more, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

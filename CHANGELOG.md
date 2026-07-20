@@ -10,6 +10,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`simpit_ortho_agent`** package: per-machine ortho scenery cache
+  agent (see `docs/ORTHO_AGENT.md`). Subscribes to the X-Plane
+  master's position over RREF (ground track, not heading) and keeps a
+  moving bubble of Ortho4XP atlases warm in the local rclone VFS cache
+  — rings in atlas units around the aircraft and its 45 s along-track
+  projection, mixed-zoom aware via a per-folder textures index
+  (airport patches ride along with the base). One primer thread does
+  8 MB sequential first reads then cheap keep-warm touches; eviction
+  is left entirely to rclone's LRU size cap (the agent issues no rc
+  eviction calls and never writes the cache dir — bulk evictions have
+  crashed X-Plane before). Includes fallback mount supervision with
+  double-mount safety, a SIM_OFFLINE/IDLE/ACTIVE state machine, and
+  fleet config re-reads on each sim return. Ships as
+  `simpit-ortho-agent` (console script + PyInstaller spec).
+- **`simpit_common.tilemath`** — pure slippy-tile / atlas math shared
+  by the agent and the live verifier; **`simpit_common.xp_rref`** —
+  shared RREF wire helpers (extracted from the probe engine).
+- Live ortho-chain checks now exercise the production tilemath/index
+  code when run from a checkout (stdlib fallback copies remain for the
+  bare two-file slave deployment), understand the
+  whole-Custom-Scenery-junction layout, and compare the VFS cache to
+  the per-machine `cache_max_gb` instead of a hardcoded cap.
+
+### Changed
+- `ortho_config` moved from `simpit_control` to `simpit_common` so
+  Control's dialog and the ortho agent share the single loader; adds
+  `scenery_root()`. Import paths updated (`simpit_control` kept no
+  shim — update any external imports to `simpit_common.ortho_config`).
 - **`set_scenery_profile`** standard script: rule-based
   `scenery_packs.ini` generator that switches the active Ortho4XP zoom
   level per tile (Z16 vs Z18) from named JSON profiles in

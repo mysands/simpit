@@ -6,21 +6,28 @@ pushd "%~dp0"
 
 echo.
 echo ============================================================
-echo  Step 1/3: Build simpit-control.exe
+echo  Step 1/4: Build simpit-control.exe
 echo ============================================================
 call build_control.bat
 if errorlevel 1 goto :fail
 
 echo.
 echo ============================================================
-echo  Step 2/3: Build simpit-slave.exe
+echo  Step 2/4: Build simpit-slave.exe
 echo ============================================================
 call build_slave.bat
 if errorlevel 1 goto :fail
 
 echo.
 echo ============================================================
-echo  Step 3/3: Compile Inno Setup installer
+echo  Step 3/4: Build simpit-ortho-agent.exe
+echo ============================================================
+call build_ortho_agent.bat
+if errorlevel 1 goto :fail
+
+echo.
+echo ============================================================
+echo  Step 4/4: Compile Inno Setup installer
 echo ============================================================
 
 set ISCC=

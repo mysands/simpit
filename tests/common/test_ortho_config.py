@@ -74,6 +74,7 @@ def test_from_dict_ignores_unknown_and_stale_rclone_cmd():
     ("lookahead_seconds", 1000.0, "0-600"),
     ("poll_hz", 0.0, "0.1-10"),
     ("touch_interval_seconds", 5.0, "10-3600"),
+    ("prime_mbps", -1.0, "0-1000"),
     ("heading_offset_deg", 270.0, "-180..180"),
 ])
 def test_validation_rejects(bad_field, bad_value, fragment):

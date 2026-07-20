@@ -79,7 +79,8 @@ class Engine:
         self.feed = feed or PositionFeed(config.master_ip,
                                          config.xp_udp_port,
                                          config.poll_hz)
-        self.primer = primer or Primer(root, config.touch_interval_seconds)
+        self.primer = primer or Primer(root, config.touch_interval_seconds,
+                                       config.prime_mbps)
         self.supervisor = supervisor or MountSupervisor(config)
         self.scenery = scenery or SceneryIndex(root, config.active_zoom)
         self.state = SIM_OFFLINE
@@ -146,6 +147,7 @@ class Engine:
             self.scenery.active_zoom = new.active_zoom
             self.scenery.clear()
         self.primer.set_touch_interval(new.touch_interval_seconds)
+        self.primer.set_bandwidth(new.prime_mbps)
         self._cfg = new
 
     # ── run loop ─────────────────────────────────────────────────────────

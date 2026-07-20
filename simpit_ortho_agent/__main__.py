@@ -53,6 +53,25 @@ def _setup_logging(verbose: bool, log_file: Path | None) -> None:
     )
 
 
+def _lower_process_priority() -> None:
+    """Drop CPU and I/O priority so priming yields to X-Plane.
+
+    Best-effort: psutil is a repo dependency but the agent must still
+    run without it (bare python on a slave).
+    """
+    try:
+        import psutil
+        proc = psutil.Process()
+        if hasattr(psutil, "BELOW_NORMAL_PRIORITY_CLASS"):     # Windows
+            proc.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            proc.ionice(psutil.IOPRIO_LOW)
+        else:                                                  # POSIX
+            proc.nice(10)
+    except Exception as exc:                                   # noqa: BLE001
+        logging.getLogger("simpit.ortho").debug(
+            "could not lower process priority: %s", exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns process exit code."""
     parser = argparse.ArgumentParser(
@@ -84,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("agent disabled in config (%s) — exiting", args.config)
         return 0
 
+    _lower_process_priority()
     engine = Engine(cfg, args.config)
 
     stop = threading.Event()

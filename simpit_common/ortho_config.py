@@ -56,6 +56,12 @@ class OrthoAgentConfig:
     lookahead_seconds:      float = 45.0
     poll_hz:                float = 1.0
     touch_interval_seconds: float = 60.0
+    # Primer read-bandwidth cap in MB/s (0 = unthrottled). Staying ahead
+    # of the aircraft needs only ~5-8 MB/s sustained; unthrottled bursts
+    # (hundreds of MB at disk speed per atlas crossing) starve X-Plane's
+    # own scenery reads on the same cache drive — measured as micro-
+    # stutters every ~15 s in flight, 2026-07-19.
+    prime_mbps:             float = 24.0
     heading_offset_deg:     float = 0.0
     # Fleet distribution: the folder (UNC or local) holding the
     # authoritative copy every machine reads. Site-specific, so there
@@ -155,6 +161,10 @@ class OrthoAgentConfig:
             errors.append(
                 f"Touch interval must be 10-3600 s, got "
                 f"{self.touch_interval_seconds}.")
+        if not 0 <= self.prime_mbps <= 1000:
+            errors.append(
+                f"Prime bandwidth must be 0-1000 MB/s (0 = unthrottled), "
+                f"got {self.prime_mbps}.")
         if not -180 <= self.heading_offset_deg <= 180:
             errors.append(
                 f"Heading offset must be -180..180°, got "

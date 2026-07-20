@@ -12,11 +12,11 @@ from pathlib import Path
 from simpit_ortho_agent.primer import Primer
 
 
-def _make_atlases(root: Path, names: list[str]) -> None:
+def _make_atlases(root: Path, names: list[str], size: int = 1024) -> None:
     tex = root / "zOrtho4XP_Z18_+42-073" / "textures"
     tex.mkdir(parents=True, exist_ok=True)
     for name in names:
-        (tex / name).write_bytes(b"\x00" * 1024)
+        (tex / name).write_bytes(b"\x00" * size)
 
 
 def _rel(name: str) -> str:
@@ -145,6 +145,38 @@ def test_clear_pending_pauses_without_forgetting_warmth(tmp_path):
     primer.clear_pending()
     assert primer.idle()                   # pause dropped the queue...
     assert primer.is_warm(a)               # ...but warmth survives
+
+
+def test_prime_reads_are_paced_to_the_bandwidth_cap(tmp_path):
+    """A prime may not run at raw disk speed — unthrottled bursts starve
+    X-Plane's scenery reads on the shared cache drive (live-measured as
+    micro-stutters). 1 MB at 4 MB/s must take at least ~0.25 s."""
+    _make_atlases(tmp_path, ["0_0_BI16.dds"], size=1024 * 1024)
+    primer = Primer(tmp_path, touch_interval_seconds=3600.0, prime_mbps=4.0)
+    primer.start()
+    start = time.monotonic()
+    primer.schedule([_rel("0_0_BI16.dds")])
+    _wait_idle(primer)
+    # idle() flips when the queue empties; the read itself finishes a
+    # beat later, so wait for warmth before stopping the clock.
+    while not primer.is_warm(_rel("0_0_BI16.dds")):
+        time.sleep(0.01)
+    elapsed = time.monotonic() - start
+    primer.stop()
+    assert elapsed >= 0.2
+
+
+def test_prime_bandwidth_zero_means_unthrottled(tmp_path):
+    _make_atlases(tmp_path, ["0_0_BI16.dds"], size=1024 * 1024)
+    primer = Primer(tmp_path, touch_interval_seconds=3600.0, prime_mbps=0.0)
+    primer.start()
+    start = time.monotonic()
+    primer.schedule([_rel("0_0_BI16.dds")])
+    _wait_idle(primer)
+    while not primer.is_warm(_rel("0_0_BI16.dds")):
+        time.sleep(0.01)
+    assert time.monotonic() - start < 1.0     # no pacing sleep
+    primer.stop()
 
 
 def test_primer_never_writes_into_the_scenery_tree(tmp_path):

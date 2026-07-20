@@ -98,6 +98,7 @@ fields (master IP/port, mount root) need an agent restart.
 | `lookahead_seconds` | `45` | along-track projection |
 | `poll_hz` | `1` | position sample rate / engine tick |
 | `touch_interval_seconds` | `60` | keep-warm re-touch cadence |
+| `prime_mbps` | `24` | primer read-bandwidth cap, MB/s (0 = off). Keep it modest: unthrottled bursts starve X-Plane's reads on the shared cache drive → micro-stutters (measured in flight 2026-07-19); staying ahead only needs ~5–8 MB/s |
 | `heading_offset_deg` | `0` | reserved (v2 side-view bias — defined, not applied) |
 | `fleet_config_dir` | `""` | folder of the authoritative fleet copy + overlays; empty = local-only |
 

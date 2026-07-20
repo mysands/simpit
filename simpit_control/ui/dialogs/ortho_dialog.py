@@ -13,6 +13,7 @@ from tkinter import messagebox
 from typing import Callable
 
 from simpit_common import ortho_config
+
 from .. import theme
 
 
@@ -54,6 +55,7 @@ class OrthoConfigDialog(tk.Toplevel):
         self.var_lookahead = tk.StringVar(value=f"{c.lookahead_seconds:g}")
         self.var_poll_hz   = tk.StringVar(value=f"{c.poll_hz:g}")
         self.var_touch     = tk.StringVar(value=f"{c.touch_interval_seconds:g}")
+        self.var_prime_bw  = tk.StringVar(value=f"{c.prime_mbps:g}")
         self.var_hdg_off   = tk.StringVar(value=f"{c.heading_offset_deg:g}")
 
         self._heading("NAS / MOUNT")
@@ -90,6 +92,7 @@ class OrthoConfigDialog(tk.Toplevel):
                          ("LOOKAHEAD (s)", self.var_lookahead, 1),
                          ("POLL RATE (Hz)", self.var_poll_hz, 1)])
         self._entry_row([("KEEP-WARM TOUCH (s)", self.var_touch, 1),
+                         ("PRIME BW (MB/s, 0=off)", self.var_prime_bw, 1),
                          ("HEADING OFFSET (°, v2)", self.var_hdg_off, 1)])
 
         self._heading("FLEET DISTRIBUTION")
@@ -186,6 +189,7 @@ class OrthoConfigDialog(tk.Toplevel):
             lookahead_seconds=num(self.var_lookahead, "Lookahead"),
             poll_hz=num(self.var_poll_hz, "Poll rate"),
             touch_interval_seconds=num(self.var_touch, "Touch interval"),
+            prime_mbps=num(self.var_prime_bw, "Prime bandwidth"),
             heading_offset_deg=num(self.var_hdg_off, "Heading offset"),
             fleet_config_dir=self.var_fleet_dir.get().strip(),
         )

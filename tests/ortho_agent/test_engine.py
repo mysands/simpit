@@ -61,6 +61,9 @@ class FakePrimer:
     def set_touch_interval(self, seconds):
         self.touch_interval = seconds
 
+    def set_bandwidth(self, prime_mbps):
+        self.prime_mbps = prime_mbps
+
     def start(self): ...
     def stop(self): ...
 

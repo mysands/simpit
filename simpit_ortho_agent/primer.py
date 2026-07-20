@@ -23,6 +23,13 @@ cache still holds it — the read comes from local disk).
 One daemon worker thread drains a work queue of atlas paths that the
 engine refills nearest-first each tick; a refill *replaces* the pending
 queue so priorities never go stale mid-turn.
+
+Reads are PACED to ``prime_mbps`` (config; 0 = unthrottled): warm-cache
+primes otherwise run at full disk speed, and a 15-35 atlas burst every
+atlas crossing starved X-Plane's own scenery reads on the same cache
+drive — measured as micro-stutters every ~15 s in flight (2026-07-19).
+The lookahead gives the primer seconds of headroom, so a gentle
+sustained rate keeps the bubble warm without competing with the sim.
 """
 from __future__ import annotations
 
@@ -46,7 +53,8 @@ class Primer:
     """
 
     def __init__(self, scenery_root: Path,
-                 touch_interval_seconds: float = 60.0):
+                 touch_interval_seconds: float = 60.0,
+                 prime_mbps: float = 24.0):
         """Set up the primer (no I/O until :meth:`start`).
 
         Args:
@@ -54,9 +62,12 @@ class Primer:
                 are relative to it.
             touch_interval_seconds: how often each keep-set atlas gets
                 re-touched to stay warm.
+            prime_mbps: sustained read-bandwidth cap in MB/s; 0 turns
+                pacing off (only sensible on a dedicated cache drive).
         """
         self._root = Path(scenery_root)
         self._touch_interval = touch_interval_seconds
+        self._prime_mbps = prime_mbps
         # rel_path -> monotonic time of last successful prime/touch.
         self._warm: dict[str, float] = {}
         self._pending: deque[str] = deque()
@@ -129,6 +140,11 @@ class Primer:
         with self._cond:
             self._touch_interval = seconds
 
+    def set_bandwidth(self, prime_mbps: float) -> None:
+        """Apply a config-reload change to the read pacing cap."""
+        with self._cond:
+            self._prime_mbps = prime_mbps
+
     def is_warm(self, rel_path: str) -> bool:
         """True if the path has been fully primed and not dropped since."""
         with self._cond:
@@ -160,7 +176,7 @@ class Primer:
                     self._warm.pop(rel_path, None)
 
     def _read(self, rel_path: str, full: bool) -> bool:
-        """Prime or touch one atlas. Returns False if unreadable."""
+        """Prime or touch one atlas, paced. Returns False if unreadable."""
         path = self._root / rel_path
         start = time.perf_counter()
         total = 0
@@ -168,10 +184,13 @@ class Primer:
             with open(path, "rb") as fh:
                 if full:
                     while True:
+                        chunk_start = time.perf_counter()
                         block = fh.read(PRIME_CHUNK_BYTES)
                         if not block:
                             break
                         total += len(block)
+                        self._pace(len(block),
+                                   time.perf_counter() - chunk_start)
                 else:
                     total = len(fh.read(TOUCH_BYTES))
         except OSError as exc:
@@ -181,3 +200,17 @@ class Primer:
             log.info("primed %s (%.1f MB in %.2fs)", rel_path,
                      total / 1e6, time.perf_counter() - start)
         return True
+
+    def _pace(self, n_bytes: int, elapsed: float) -> None:
+        """Sleep off the difference between actual and budgeted read time.
+
+        Interruptible via the stop event so shutdown never waits out a
+        pacing sleep.
+        """
+        with self._cond:
+            mbps = self._prime_mbps
+        if mbps <= 0:
+            return
+        budget = n_bytes / (mbps * 1e6)
+        if budget > elapsed:
+            self._stop.wait(budget - elapsed)

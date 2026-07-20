@@ -56,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-machine Custom Scenery.
 
 ### Fixed
+- Ortho agent: primer reads are now paced (`prime_mbps`, default
+  24 MB/s, 0 = off; editable in Control's Ortho Cache dialog) and the
+  agent lowers its own CPU/IO priority at startup. Unthrottled
+  warm-cache primes ran at raw disk speed, and the 15-35-atlas burst
+  at every atlas crossing starved X-Plane's scenery reads on the
+  shared cache drive — confirmed live by A/B test as the cause of
+  micro-stutters every ~15 s in flight (2026-07-19). Staying ahead of
+  the aircraft needs only ~5-8 MB/s sustained, so the cap costs
+  nothing.
 - Ortho agent: atlas filenames with mixed-case providers now parse —
   the NAS holds ArcGIS atlases (`…_Arc18.dds`, e.g. all 2,543 in
   `Z18_+34-119`/KVNY) alongside Bing's `BI`, and the all-uppercase

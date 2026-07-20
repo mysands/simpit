@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`make_dummy_scenery`** standard script: builds a dummy-texture
+  mirror of the ortho Custom Scenery for the X-Plane master (flight
+  model machine) — identical `zOrtho4XP_Z*` folder names, DSFs and
+  `.ter` files copied, every `textures/*.dds` atlas replaced by a
+  ~300-byte uniform-color DXT1 stand-in, masks copied, Ortho4XP build
+  intermediates and `*.bak` skipped. Incremental via per-folder
+  `.simpit_dummy.json` markers (re-runs build only new tiles), with
+  `--verify`, `--prune`, `--only`, `--dry-run`, `--color`, and a
+  refusal to write anywhere inside the real scenery tree. Folder names
+  match `set_scenery_profile.py`'s scanner, so the master's
+  `scenery_packs.ini` is managed unchanged (covered by tests).
 - **`set_scenery_profile`** standard script: rule-based
   `scenery_packs.ini` generator that switches the active Ortho4XP zoom
   level per tile (Z16 vs Z18) from named JSON profiles in

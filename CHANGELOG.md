@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole-Custom-Scenery-junction layout, and compare the VFS cache to
   the per-machine `cache_max_gb` instead of a hardcoded cap.
 
+- **`make_dummy_scenery`** standard script: builds a dummy-texture
+  mirror of the ortho Custom Scenery for the X-Plane master (flight
+  model machine) — identical `zOrtho4XP_Z*` folder names, DSFs and
+  `.ter` files copied, every `textures/*.dds` atlas replaced by a
+  ~300-byte uniform-color DXT1 stand-in, masks copied, Ortho4XP build
+  intermediates and `*.bak` skipped. Incremental via per-folder
+  `.simpit_dummy.json` markers (re-runs build only new tiles), with
+  `--verify`, `--prune`, `--only`, `--dry-run`, `--color`, and a
+  refusal to write anywhere inside the real scenery tree. Folder names
+  match `set_scenery_profile.py`'s scanner, so the master's
+  `scenery_packs.ini` is managed unchanged (covered by tests).
+
 ### Changed
 - `fleet_config_dir` no longer defaults to a site-specific UNC path:
   empty (the new default) means fleet distribution is off and the

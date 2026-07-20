@@ -10,10 +10,12 @@ Python 3.10+ - no repo checkout, no pytest, no CI involvement:
 The same check functions back the pytest wrappers in
 `tests/live/test_ortho_chain.py` for use on a dev machine.
 
-The tile/atlas helpers are self-contained copies of the logic specified in
-the ortho agent handoff (atlas scheme verified on RandhawaNAS 2026-07-05).
-Once `simpit_ortho_agent` / `simpit_common.tilemath` exist, swap these for
-real imports so verification exercises production code.
+The tile/atlas helpers import the PRODUCTION implementations
+(`simpit_common.tilemath` / `simpit_ortho_agent.atlas_index`) when the
+repo is importable, so verification exercises the agent's real code. On
+a bare slave (two copied files, no repo) the import fails and the
+self-contained fallback copies below take over — same logic, verified
+against the same NAS listings (2026-07-05).
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import math
 import os
 import re
 import socket
+import stat
 import struct
 import subprocess
 import time
@@ -87,6 +90,11 @@ def load_config(path: str | None = None) -> dict:
                                             "ortho_agent.json"))
     if candidate.is_file():
         merged.update(json.loads(candidate.read_text(encoding="utf-8")))
+    # ortho_agent.json states the cap in GB (cache_max_gb, mirrored into
+    # the mount command); the checks compare bytes. Per-machine caps
+    # differ (e.g. 460G on CENTERLEFT), so the config must win.
+    if "cache_max_gb" in merged:
+        merged["cache_max_bytes"] = int(merged["cache_max_gb"]) * 10**9
     return merged
 
 
@@ -224,38 +232,106 @@ def agent_running() -> bool:
     return False
 
 
-# ── tile / atlas math (inline until simpit_common.tilemath exists) ───────
+# ── tile / atlas math ────────────────────────────────────────────────────
+# Production imports when the repo is on the path; stdlib-only fallback
+# copies otherwise (bare-slave deployment of just these two files).
+try:
+    from simpit_common.tilemath import dsf_folder_name, latlon_to_tile, project_position
+    from simpit_ortho_agent.atlas_index import load_atlas_index, resolve_atlas
+    USING_PRODUCTION_CODE = True
+except ImportError:
+    USING_PRODUCTION_CODE = False
 
-def latlon_to_tile(lat: float, lon: float, zoom: int) -> tuple[int, int]:
-    """Convert lat/lon to slippy tile x, y at a zoom level.
+    def latlon_to_tile(lat: float, lon: float, zoom: int) -> tuple[int, int]:
+        """Convert lat/lon to slippy tile x, y at a zoom level.
 
-    Args:
-        lat: latitude in degrees.
-        lon: longitude in degrees.
-        zoom: slippy zoom level.
+        Args:
+            lat: latitude in degrees.
+            lon: longitude in degrees.
+            zoom: slippy zoom level.
 
-    Returns:
-        (x, y) tile indices.
-    """
-    n = 2 ** zoom
-    x = int((lon + 180.0) / 360.0 * n)
-    y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
-    return x, y
+        Returns:
+            (x, y) tile indices.
+        """
+        n = 2 ** zoom
+        x = int((lon + 180.0) / 360.0 * n)
+        y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi)
+                / 2.0 * n)
+        return x, y
 
+    def dsf_folder_name(lat: float, lon: float, zoom_label: int) -> str:
+        """Build the scenery folder name covering a position.
 
-def dsf_folder_name(lat: float, lon: float, zoom_label: int) -> str:
-    """Build the scenery folder name covering a position.
+        Args:
+            lat: latitude in degrees.
+            lon: longitude in degrees.
+            zoom_label: scenery-set label (18 or 16) - NOT the atlas zoom.
 
-    Args:
-        lat: latitude in degrees.
-        lon: longitude in degrees.
-        zoom_label: scenery-set label (18 or 16) - NOT the atlas zoom.
+        Returns:
+            e.g. "zOrtho4XP_Z18_+42-073" (floor, not truncation).
+        """
+        return (f"zOrtho4XP_Z{zoom_label}_"
+                f"{math.floor(lat):+03d}{math.floor(lon):+04d}")
 
-    Returns:
-        e.g. "zOrtho4XP_Z18_+42-073" (floor, not truncation).
-    """
-    return (f"zOrtho4XP_Z{zoom_label}_"
-            f"{math.floor(lat):+03d}{math.floor(lon):+04d}")
+    def load_atlas_index(folder: Path) -> dict[tuple[int, int, int], str]:
+        """Index a scenery folder's textures directory.
+
+        Args:
+            folder: a zOrtho4XP_* folder on the mount.
+
+        Returns:
+            {(x16, y16, zoom): filename} for every atlas .dds present.
+        """
+        index: dict[tuple[int, int, int], str] = {}
+        for entry in (folder / "textures").iterdir():
+            m = ATLAS_RE.match(entry.name)
+            if m:
+                index[(int(m.group(2)), int(m.group(1)),
+                       int(m.group(4)))] = entry.name
+        return index
+
+    def resolve_atlas(lat: float, lon: float,
+                      index: dict[tuple[int, int, int], str]) -> str | None:
+        """Find the atlas covering a position, highest zoom first.
+
+        Zooms are mixed within one folder (airport patches over a
+        lower-zoom base), so every zoom present in the index is tried
+        in descending order.
+
+        Args:
+            lat: latitude in degrees.
+            lon: longitude in degrees.
+            index: output of load_atlas_index().
+
+        Returns:
+            Atlas filename, or None (water / unbuilt area).
+        """
+        for zoom in sorted({k[2] for k in index}, reverse=True):
+            x, y = latlon_to_tile(lat, lon, zoom)
+            name = index.get((x // 16 * 16, y // 16 * 16, zoom))
+            if name:
+                return name
+        return None
+
+    def project_position(lat: float, lon: float, track_deg: float,
+                         gs_ms: float, seconds: float) -> tuple[float, float]:
+        """Advance a position along the ground track (flat-earth approx).
+
+        Args:
+            lat: latitude in degrees.
+            lon: longitude in degrees.
+            track_deg: ground track, degrees true.
+            gs_ms: groundspeed in m/s.
+            seconds: lookahead time.
+
+        Returns:
+            (lat, lon) of the projected position.
+        """
+        dist = gs_ms * seconds
+        t = math.radians(track_deg)
+        dlat = dist * math.cos(t) / 111_320.0
+        dlon = dist * math.sin(t) / (111_320.0 * math.cos(math.radians(lat)))
+        return lat + dlat, lon + dlon
 
 
 def find_dsf_folder(mount_root: Path, lat: float, lon: float,
@@ -276,67 +352,6 @@ def find_dsf_folder(mount_root: Path, lat: float, lon: float,
         if folder.is_dir():
             return folder
     return None
-
-
-def load_atlas_index(folder: Path) -> dict[tuple[int, int, int], str]:
-    """Index a scenery folder's textures directory.
-
-    Args:
-        folder: a zOrtho4XP_* folder on the mount.
-
-    Returns:
-        {(y16, x16, zoom): filename} for every atlas .dds present.
-    """
-    index: dict[tuple[int, int, int], str] = {}
-    for entry in (folder / "textures").iterdir():
-        m = ATLAS_RE.match(entry.name)
-        if m:
-            index[(int(m.group(1)), int(m.group(2)), int(m.group(4)))] = entry.name
-    return index
-
-
-def resolve_atlas(lat: float, lon: float,
-                  index: dict[tuple[int, int, int], str]) -> str | None:
-    """Find the atlas covering a position, highest zoom first.
-
-    Zooms are mixed within one folder (airport patches over a lower-zoom
-    base), so every zoom present in the index is tried in descending order.
-
-    Args:
-        lat: latitude in degrees.
-        lon: longitude in degrees.
-        index: output of load_atlas_index().
-
-    Returns:
-        Atlas filename, or None (water / unbuilt area).
-    """
-    for zoom in sorted({k[2] for k in index}, reverse=True):
-        x, y = latlon_to_tile(lat, lon, zoom)
-        name = index.get((y // 16 * 16, x // 16 * 16, zoom))
-        if name:
-            return name
-    return None
-
-
-def project_position(lat: float, lon: float, track_deg: float,
-                     gs_ms: float, seconds: float) -> tuple[float, float]:
-    """Advance a position along the ground track (flat-earth approximation).
-
-    Args:
-        lat: latitude in degrees.
-        lon: longitude in degrees.
-        track_deg: ground track, degrees true.
-        gs_ms: groundspeed in m/s.
-        seconds: lookahead time.
-
-    Returns:
-        (lat, lon) of the projected position.
-    """
-    dist = gs_ms * seconds
-    t = math.radians(track_deg)
-    dlat = dist * math.cos(t) / 111_320.0
-    dlon = dist * math.sin(t) / (111_320.0 * math.cos(math.radians(lat)))
-    return lat + dlat, lon + dlon
 
 
 def read_fully(path: Path, chunk: int = 8 * 1024 * 1024) -> tuple[int, float]:
@@ -429,11 +444,31 @@ def check_atlas_naming(cfg: dict) -> CheckResult:
                        "{{y16}}_{{x16}}_{{provider}}{{zoom}}.dds")
 
 
-def check_scenery_link(cfg: dict) -> CheckResult:
-    """Custom Scenery contains a junction/symlink resolving onto the mount.
+def _is_reparse_point(path: Path) -> bool:
+    """True for NTFS junctions and symlinks (cross-platform fallback)."""
+    try:
+        st = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    attrs = getattr(st, "st_file_attributes", 0)   # Windows-only field
+    if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    return path.is_symlink()
 
-    NTFS cannot hard-link directories; the expected link type is a
-    junction (mklink /J) or directory symlink - both resolve here.
+
+def check_scenery_link(cfg: dict) -> CheckResult:
+    """Custom Scenery resolves onto the mount, wholesale or per-folder.
+
+    Two supported layouts:
+
+    * The whole ``Custom Scenery`` directory is one junction onto the
+      mount (the current fleet setup: ``mklink /J`` → ``X:\\``).
+    * ``Custom Scenery`` is a real folder holding per-folder junctions
+      or symlinks into the mount.
+
+    NTFS cannot hard-link directories; only reparse points (junctions,
+    symlinks) are considered links — ordinary files that merely LIVE
+    under a junctioned tree (scenery_packs.ini and friends) are not.
     """
     scenery = Path(cfg["xplane_custom_scenery"])
     mount_drive = Path(cfg["mount_root"]).drive.upper()
@@ -441,15 +476,31 @@ def check_scenery_link(cfg: dict) -> CheckResult:
         return CheckResult("scenery-link", SKIP,
                            f"Custom Scenery not found at {scenery} - set "
                            "xplane_custom_scenery in config")
+    if _is_reparse_point(scenery):
+        try:
+            resolved = scenery.resolve()
+        except OSError as exc:
+            return CheckResult("scenery-link", FAIL,
+                               f"{scenery} is a broken link: {exc}")
+        if resolved.drive.upper() == mount_drive:
+            return CheckResult("scenery-link", PASS,
+                               f"{scenery} is a junction onto the mount "
+                               f"({resolved})")
+        return CheckResult("scenery-link", SKIP,
+                           f"{scenery} links to {resolved}, not the "
+                           f"{mount_drive} mount")
     links, broken = [], []
     for entry in scenery.iterdir():
+        if not _is_reparse_point(entry):
+            continue
         try:
             resolved = entry.resolve()
         except OSError:
             broken.append(entry.name)
             continue
-        if resolved != entry and resolved.drive.upper() == mount_drive:
-            (links if resolved.is_dir() else broken).append(entry.name)
+        if resolved.drive.upper() != mount_drive:
+            continue
+        (links if resolved.is_dir() else broken).append(entry.name)
     if broken:
         return CheckResult("scenery-link", FAIL,
                            f"broken links into the mount: {broken}")

@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookahead check projects the same way.
 
 ### Changed
+- Fleet ortho config distribution is now TUNING-ONLY: the fleet base
+  written by Control's Ortho Cache dialog carries just the shared
+  priming parameters (enabled, zoom, rings, lookahead, poll rate,
+  touch cadence, bandwidth, waypoint aiming, heading offset). Machine
+  fields (mount drive, cache size/folder, rclone remote, rc address,
+  endpoints) are installer-owned per machine and never distributed —
+  previously a full-config fleet base would have overwritten each
+  slave's install answers on merge. The dialog was slimmed to match;
+  per-machine exceptions use the hostname overlay.
 - `fleet_config_dir` no longer defaults to a site-specific UNC path:
   empty (the new default) means fleet distribution is off and the
   agent/Control work purely from the local `ortho_agent.json` without

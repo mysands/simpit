@@ -116,28 +116,49 @@ def test_default_fleet_dir_is_empty_and_local_only(tmp_path):
     assert ortho_config.load_effective(local, hostname="RIGHT") == cfg
 
 
-def test_save_fleet_writes_local_and_nas_copy(tmp_path):
-    """save_fleet lands both copies and returns no warning on success."""
+def test_save_fleet_writes_local_full_and_nas_tuning_only(tmp_path):
+    """save_fleet lands both copies: the local one is the full config,
+    the fleet base carries ONLY the tuning keys — machine-specific
+    fields (mount, cache) must never be distributed, or one machine's
+    install answers would clobber every other's."""
     local = tmp_path / "local" / "ortho_agent.json"
     fleet_dir = tmp_path / "nas"
-    cfg = OrthoAgentConfig(fleet_config_dir=str(fleet_dir), n_rings=6)
+    cfg = OrthoAgentConfig(fleet_config_dir=str(fleet_dir), n_rings=6,
+                           cache_max_gb=460, cache_dir=r"E:\rclone-cache")
     assert ortho_config.save_fleet(cfg, local) is None
     assert ortho_config.load_or_default(local) == cfg
-    assert ortho_config.load_or_default(fleet_dir / "ortho_agent.json") == cfg
+    base = json.loads((fleet_dir / "ortho_agent.json")
+                      .read_text(encoding="utf-8"))
+    assert base["n_rings"] == 6
+    assert set(base) == set(ortho_config.FLEET_TUNING_FIELDS) | {
+        "schema_version"}
+    assert "cache_max_gb" not in base and "mount_root" not in base
 
 
-def test_save_fleet_unreachable_nas_keeps_local(tmp_path, monkeypatch):
+def test_fleet_base_never_overrides_machine_fields(tmp_path):
+    """A slave with installer-set cache values keeps them after merging
+    the fleet base written by Control (whose values differ)."""
+    fleet_dir = tmp_path / "nas"
+    control_cfg = OrthoAgentConfig(fleet_config_dir=str(fleet_dir),
+                                   n_rings=6, cache_max_gb=160)
+    ortho_config.save_fleet(control_cfg, tmp_path / "control.json")
+    slave_local = tmp_path / "slave.json"
+    ortho_config.save(OrthoAgentConfig(fleet_config_dir=str(fleet_dir),
+                                       cache_max_gb=460,
+                                       cache_dir=r"E:\rclone-cache"),
+                      slave_local)
+    eff = ortho_config.load_effective(slave_local, hostname="CENTERLEFT")
+    assert eff.n_rings == 6                        # tuning distributed
+    assert eff.cache_max_gb == 460                 # machine field kept
+    assert eff.cache_dir == r"E:\rclone-cache"
+
+
+def test_save_fleet_unreachable_nas_keeps_local(tmp_path):
     """NAS write failure returns a warning but the local copy is saved."""
     local = tmp_path / "ortho_agent.json"
+    # A FILE where the fleet dir should be makes the fleet write fail.
+    (tmp_path / "nas").write_text("not a directory", encoding="utf-8")
     cfg = OrthoAgentConfig(fleet_config_dir=str(tmp_path / "nas"))
-    real_save = ortho_config.save
-
-    def failing_save(config, path):
-        if "nas" in str(path):
-            raise OSError("share unreachable")
-        real_save(config, path)
-
-    monkeypatch.setattr(ortho_config, "save", failing_save)
     warning = ortho_config.save_fleet(cfg, local)
     assert warning and "fleet copy" in warning
     assert local.is_file()

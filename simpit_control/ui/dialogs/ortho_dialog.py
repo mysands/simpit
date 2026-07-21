@@ -1,12 +1,18 @@
-"""Ortho cache agent settings dialog.
+"""Ortho cache agent settings dialog — fleet-wide TUNING only.
 
-Edits the master copy of ``ortho_agent.json`` in the Control data dir
-(see :mod:`simpit_control.ortho_config`). The rclone mount command is
-shown as a live read-only preview so the user always sees exactly what
-the agent will launch — it is derived from the fields, never edited.
+Edits the priming parameters every agent shares (rings, lookahead,
+touch cadence, bandwidth, zoom label, waypoint aiming) and distributes
+them via the fleet folder. Machine-specific settings — rclone remote,
+mount drive, cache size/folder, rc address, master endpoint — are
+deliberately NOT here: the installer owns them per machine, and a
+fleet base carrying them would clobber each slave's install answers
+(e.g. one machine's 460G cache cap overwritten by another's default).
+Per-machine exceptions go in the ``ortho_agent.<hostname>.json``
+overlay next to the fleet base.
 """
 from __future__ import annotations
 
+import dataclasses
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
@@ -18,7 +24,7 @@ from .. import theme
 
 
 class OrthoConfigDialog(tk.Toplevel):
-    """Modal dialog for the ortho cache agent settings."""
+    """Modal dialog for the fleet-wide ortho agent tuning."""
 
     def __init__(self, parent: tk.Misc, config_path: Path,
                  on_save: Callable[[ortho_config.OrthoAgentConfig], None]
@@ -42,14 +48,6 @@ class OrthoConfigDialog(tk.Toplevel):
     def _build(self) -> None:
         c = self.cfg
         self.var_enabled   = tk.BooleanVar(value=c.enabled)
-        self.var_remote    = tk.StringVar(value=c.remote_target)
-        self.var_mount     = tk.StringVar(value=c.mount_root)
-        self.var_cache_gb  = tk.StringVar(value=str(c.cache_max_gb))
-        self.var_cache_age = tk.StringVar(value=c.cache_max_age)
-        self.var_rc_addr   = tk.StringVar(value=c.rc_addr)
-        self.var_supervise = tk.BooleanVar(value=c.supervise_mount)
-        self.var_master_ip = tk.StringVar(value=c.master_ip)
-        self.var_udp_port  = tk.StringVar(value=str(c.xp_udp_port))
         self.var_zoom      = tk.StringVar(value=str(c.active_zoom))
         self.var_rings     = tk.StringVar(value=str(c.n_rings))
         self.var_lookahead = tk.StringVar(value=f"{c.lookahead_seconds:g}")
@@ -59,24 +57,8 @@ class OrthoConfigDialog(tk.Toplevel):
         self.var_wp_look   = tk.BooleanVar(value=c.waypoint_lookahead)
         self.var_hdg_off   = tk.StringVar(value=f"{c.heading_offset_deg:g}")
 
-        self._heading("NAS / MOUNT")
-        self._entry_row([("RCLONE REMOTE (remote:share/path)", self.var_remote, 3)])
-        self._entry_row([("MOUNT DRIVE (e.g. X:/)", self.var_mount, 1),
-                         ("CACHE SIZE (GB)", self.var_cache_gb, 1),
-                         ("CACHE MAX AGE", self.var_cache_age, 1)])
-        self.var_cache_dir = tk.StringVar(value=c.cache_dir)
-        self._entry_row([("RC ADDRESS (host:port)", self.var_rc_addr, 1),
-                         ("CACHE FOLDER (blank = rclone default)",
-                          self.var_cache_dir, 2)])
-        self._check("Supervise mount (launch rclone if the drive is missing)",
-                    self.var_supervise)
-
-        self._heading("POSITION FEED (X-PLANE MASTER)")
-        self._entry_row([("MASTER IP", self.var_master_ip, 2),
-                         ("UDP PORT", self.var_udp_port, 1)])
-
-        self._heading("AGENT PARAMETERS")
-        self._check("Agent enabled", self.var_enabled)
+        self._heading("AGENT TUNING (applies to every machine)")
+        self._check("Agents enabled fleet-wide", self.var_enabled)
         row = tk.Frame(self, bg=theme.BG)
         row.pack(fill="x", padx=20, pady=(8, 2))
         tk.Label(row, text="ACTIVE ZOOM (scenery set)", font=theme.FONT_TINY,
@@ -104,18 +86,15 @@ class OrthoConfigDialog(tk.Toplevel):
                           "per-machine overlay: ortho_agent.<hostname>.json)",
                           self.var_fleet_dir, 1)])
         tk.Label(self,
-                 text=("Saved settings reach running agents within ~1 min. "
-                       "Endpoint changes (master IP, mount, cache) make each "
-                       "agent restart its components automatically."),
+                 text=("Saved tuning reaches running agents within ~1 min. "
+                       "Machine-specific settings (mount drive, cache "
+                       "size/folder, rclone remote, endpoints) are set by "
+                       "the installer on each machine and are not "
+                       "distributed from here; use the hostname overlay "
+                       "for per-machine exceptions."),
                  font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
                  wraplength=580, justify="left",
                  ).pack(anchor="w", padx=20, pady=(4, 0))
-
-        self._heading("RCLONE MOUNT COMMAND (derived)")
-        self.preview = tk.Label(self, text="", font=theme.FONT_MONO,
-                                bg=theme.SECTION_BG, fg=theme.SUBTEXT,
-                                justify="left", anchor="w", wraplength=580)
-        self.preview.pack(fill="x", padx=20, pady=(2, 4), ipadx=8, ipady=8)
 
         btns = tk.Frame(self, bg=theme.BG)
         btns.pack(fill="x", padx=20, pady=(12, 12), side="bottom")
@@ -123,12 +102,6 @@ class OrthoConfigDialog(tk.Toplevel):
                           color=theme.BTN_DANGER, width=10).pack(side="left")
         theme.make_button(btns, "Save", self._save,
                           color=theme.BTN_OK, width=10).pack(side="right")
-
-        # Live preview: any field change re-derives the mount command.
-        for var in (self.var_remote, self.var_mount, self.var_cache_gb,
-                    self.var_cache_age, self.var_rc_addr, self.var_cache_dir):
-            var.trace_add("write", lambda *_: self._update_preview())
-        self._update_preview()
 
     def _heading(self, text: str) -> None:
         tk.Label(self, text=text, font=theme.FONT_HEADING,
@@ -165,11 +138,16 @@ class OrthoConfigDialog(tk.Toplevel):
                        selectcolor=theme.ENTRY_BG,
                        activebackground=theme.BG,
                        activeforeground=theme.TEXT,
+                       cursor="hand2",
                        ).pack(anchor="w", padx=20, pady=(6, 0))
 
     # ── Behavior ─────────────────────────────────────────────────────────
     def _collect(self) -> ortho_config.OrthoAgentConfig:
-        """Build a config object from the fields.
+        """Apply the tuning fields onto the stored config.
+
+        Machine-specific fields ride along untouched from the local
+        copy — this dialog only ever changes what the fleet base
+        distributes (plus the fleet folder itself).
 
         Raises:
             ValueError: when a numeric field does not parse; named per
@@ -182,18 +160,9 @@ class OrthoConfigDialog(tk.Toplevel):
                 raise ValueError(f"{label} must be a number, got "
                                  f"{var.get()!r}.") from exc
 
-        return ortho_config.OrthoAgentConfig(
+        return dataclasses.replace(
+            self.cfg,
             enabled=self.var_enabled.get(),
-            master_ip=self.var_master_ip.get().strip(),
-            xp_udp_port=num(self.var_udp_port, "UDP port", int),
-            remote_target=self.var_remote.get().strip(),
-            mount_root=self.var_mount.get().strip(),
-            remote_rel_root=self.cfg.remote_rel_root,
-            cache_max_gb=num(self.var_cache_gb, "Cache size", int),
-            cache_max_age=self.var_cache_age.get().strip(),
-            rc_addr=self.var_rc_addr.get().strip(),
-            cache_dir=self.var_cache_dir.get().strip(),
-            supervise_mount=self.var_supervise.get(),
             active_zoom=num(self.var_zoom, "Active zoom", int),
             n_rings=num(self.var_rings, "Keep-set rings", int),
             lookahead_seconds=num(self.var_lookahead, "Lookahead"),
@@ -204,15 +173,6 @@ class OrthoConfigDialog(tk.Toplevel):
             heading_offset_deg=num(self.var_hdg_off, "Heading offset"),
             fleet_config_dir=self.var_fleet_dir.get().strip(),
         )
-
-    def _update_preview(self) -> None:
-        """Re-derive the mount command from the current field values."""
-        try:
-            cmd = self._collect().build_rclone_cmd()
-            self.preview.config(text=" ".join(cmd), fg=theme.SUBTEXT)
-        except ValueError:
-            self.preview.config(text="(fix numeric fields to see the "
-                                     "mount command)", fg=theme.RED)
 
     def _save(self) -> None:
         try:

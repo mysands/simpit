@@ -100,16 +100,12 @@ the new config, equivalent to an agent restart with no manual step.
 The primer's warm state resets in that case and the next pass
 re-primes.
 
+**Fleet-distributed tuning** — edited in Control's Ortho Cache dialog;
+the fleet base file carries ONLY these keys:
+
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | per-machine kill switch (overlay-friendly) |
-| `master_ip` / `xp_udp_port` | `127.0.0.1` / `49000` | RREF endpoint. The localhost default is the recommended setting on every machine: external-visual instances serve live position/gs/hpath identical to the master's (verified in flight 2026-07-19), so no cross-machine UDP or per-machine IP config is needed |
-| `mount_root` | `X:/` | rclone mount drive |
-| `remote_rel_root` | `""` | mount-relative path down to Custom Scenery |
-| `cache_max_gb` | `160` | mount cache cap (460 on CENTERLEFT) |
-| `rc_addr` | `127.0.0.1:5572` | rclone rc (health checks only) |
-| `cache_dir` | `""` | rclone `--cache-dir` (`E:\rclone-cache` on CENTERLEFT) |
-| `supervise_mount` | `true` | launch rclone if the mount is down |
+| `enabled` | `true` | fleet-wide kill switch (per-machine via overlay) |
 | `active_zoom` | `18` | scenery-set folder label to prefer (18/16); the Z16/Z18 toggle script should rewrite this |
 | `n_rings` | `4` | keep-set ring radius in atlas units (9×9 block ≈ 44 km at BI17, ~0.9 GB) |
 | `lookahead_seconds` | `45` | along-track projection |
@@ -118,7 +114,23 @@ re-primes.
 | `prime_mbps` | `24` | primer read-bandwidth cap, MB/s (0 = off). Keep it modest: unthrottled bursts starve X-Plane's reads on the shared cache drive → micro-stutters (measured in flight 2026-07-19); staying ahead only needs ~5–8 MB/s |
 | `waypoint_lookahead` | `true` | aim the lookahead at the active GPS waypoint (tier-1 flight-plan awareness); off = always dead-reckon along the ground track |
 | `heading_offset_deg` | `0` | reserved (v2 side-view bias — defined, not applied) |
-| `fleet_config_dir` | `""` | folder of the authoritative fleet copy + overlays; empty = local-only |
+
+**Machine-local (installer-owned)** — seeded by the installer's Ortho
+Scenery Cache step from that machine's answers; NEVER carried by the
+fleet base (Control's values would clobber every machine's install
+answers). Override a single machine via its hostname overlay if needed:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `master_ip` / `xp_udp_port` | `127.0.0.1` / `49000` | RREF endpoint. Localhost works on every machine: external-visual instances serve live position/gs/hpath identical to the master's (verified in flight 2026-07-19) |
+| `mount_root` | `X:/` | rclone mount drive |
+| `remote_rel_root` | `""` | mount-relative path down to Custom Scenery |
+| `remote_target` | — | rclone remote (from the install answers) |
+| `cache_max_gb` | `160` | mount cache cap (460 on CENTERLEFT) |
+| `rc_addr` | `127.0.0.1:5572` | rclone rc (health checks only) |
+| `cache_dir` | `""` | rclone `--cache-dir` (`E:\rclone-cache` on CENTERLEFT) |
+| `supervise_mount` | `true` | launch rclone if the mount is down |
+| `fleet_config_dir` | `""` | folder of the fleet tuning base + overlays; empty = local-only |
 
 ## Examples
 

@@ -258,6 +258,27 @@ def save(config: OrthoAgentConfig, path: Path) -> None:
 
 FLEET_BASENAME = "ortho_agent.json"
 
+# Keys distributed fleet-wide from Control's Ortho Cache dialog. All
+# tuning — one flight, one set of priming parameters. Machine-specific
+# keys (mount drive, cache size/dir, rclone remote, rc address, master
+# endpoint) are INSTALLER-owned per machine and must never ride along:
+# a full-config fleet base would clobber e.g. CENTERLEFT's 460G/E:
+# cache settings with whatever Control's own machine uses. Per-machine
+# exceptions still work via the hostname overlay, which may carry any
+# key.
+FLEET_TUNING_FIELDS = (
+    "enabled", "active_zoom", "n_rings", "lookahead_seconds", "poll_hz",
+    "touch_interval_seconds", "prime_mbps", "waypoint_lookahead",
+    "heading_offset_deg",
+)
+
+
+def fleet_tuning_dict(config: OrthoAgentConfig) -> dict:
+    """The subset of the config that the fleet base file carries."""
+    d = {name: getattr(config, name) for name in FLEET_TUNING_FIELDS}
+    d["schema_version"] = SCHEMA_VERSION
+    return d
+
 
 def fleet_path(config: OrthoAgentConfig) -> Path | None:
     """Authoritative fleet config path, or None when distribution is off.
@@ -271,11 +292,15 @@ def fleet_path(config: OrthoAgentConfig) -> Path | None:
 
 
 def save_fleet(config: OrthoAgentConfig, local_path: Path) -> str | None:
-    """Persist the config locally and, if configured, to the fleet folder.
+    """Persist the config locally and the TUNING subset to the fleet.
 
-    The local save happens first and must succeed; the fleet save is
-    best-effort so an unreachable NAS never loses the user's edits.
-    With no fleet folder configured, only the local copy is written.
+    The local save (full config — Control's own record) happens first
+    and must succeed; the fleet save is best-effort so an unreachable
+    NAS never loses the user's edits. The fleet base deliberately
+    carries only :data:`FLEET_TUNING_FIELDS` — merging a full config
+    over every machine would overwrite their installer-owned mount and
+    cache settings. With no fleet folder configured, only the local
+    copy is written.
 
     Args:
         config: settings to persist.
@@ -293,7 +318,11 @@ def save_fleet(config: OrthoAgentConfig, local_path: Path) -> str | None:
     if target is None:
         return None
     try:
-        save(config, target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(fleet_tuning_dict(config), indent=2)
+                       + "\n", encoding="utf-8")
+        tmp.replace(target)
     except OSError as exc:
         return (f"Saved locally, but could not write the fleet copy to "
                 f"{target}: {exc}")

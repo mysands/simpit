@@ -36,6 +36,11 @@ Name: "xplanestartup"; Description: "Start &X-Plane automatically at logon (wait
 [Files]
 Source: "dist\simpit-control.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: control
 Source: "dist\simpit-slave.exe";   DestDir: "{app}"; Flags: ignoreversion; Components: slave
+; Ortho cache agent rides with the ortho option: it keeps a moving
+; bubble of ortho textures warm in the rclone VFS cache (see
+; docs/ORTHO_AGENT.md in the repo). Installed unconditionally for the
+; slave component (small exe); only STARTED when ortho is selected.
+Source: "dist\simpit-ortho-agent.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: slave
 
 [Icons]
 Name: "{group}\Simpit Control";         Filename: "{app}\simpit-control.exe"; Components: control
@@ -62,6 +67,14 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; ValueName: "SimpitOrthoMount"; \
     ValueData: """{app}\ortho_mount.bat"""; \
+    Components: slave; Check: OrthoSelected; Flags: uninsdeletevalue
+; Ortho cache agent at logon, same pattern as the mount: visible
+; console (priming log readable), no elevation. The agent re-reads its
+; fleet config every minute, so settings saved in SimPit Control's
+; Ortho Cache dialog reach it without another logon.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+    ValueType: string; ValueName: "SimpitOrthoAgent"; \
+    ValueData: """{app}\ortho_agent.bat"""; \
     Components: slave; Check: OrthoSelected; Flags: uninsdeletevalue
 
 [Run]
@@ -180,6 +193,11 @@ begin
     // do on machines that skipped the ortho option.
     Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Mount*"', '',
          SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // And the ortho cache agent (wrapper by title, then the exe).
+    Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Agent*"', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('taskkill.exe', '/F /IM simpit-ortho-agent.exe', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
     KillOurRcloneMount;
     Sleep(500);
     // The VFS cache can hold 100+ GB, but re-priming it takes hours -
@@ -206,8 +224,12 @@ begin
     // fully deleted (the uninstaller only tracks [Files]-installed ones).
     DeleteFile(ExpandConstant('{app}\ortho_mount.bat'));
     DeleteFile(ExpandConstant('{app}\ortho_mount.log'));
+    DeleteFile(ExpandConstant('{app}\ortho_agent.bat'));
     DeleteFile(ExpandConstant('{app}\launch_xplane.bat'));
     DeleteFile(ExpandConstant('{app}\rclone.exe'));
+    // The agent's config + log live in %APPDATA%\simpit-ortho-agent;
+    // tiny, and keeping them makes a reinstall pick up where it left
+    // off — deliberately not deleted.
     // Remove the inbound firewall rules we added during install.
     RemoveSlaveFirewallRules;
   end;
@@ -749,6 +771,93 @@ begin
        '', SW_HIDE, ewWaitUntilTerminated, RC);
   KillOurRcloneMount;
   Sleep(500);
+end;
+
+procedure StopPriorOrthoAgent;
+// Stop a running ortho cache agent (upgrade path): first the console
+// wrapper by window title, then the exe itself.
+var
+  RC: Integer;
+begin
+  Exec('taskkill.exe', '/F /FI "WINDOWTITLE eq SimPit Ortho Agent*"',
+       '', SW_HIDE, ewWaitUntilTerminated, RC);
+  Exec('taskkill.exe', '/F /IM simpit-ortho-agent.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
+  Sleep(500);
+end;
+
+function JsonEscapePath(const S: String): String;
+// JSON string value for a Windows path: backslashes doubled.
+begin
+  Result := S;
+  StringChangeEx(Result, '\', '\\', True);
+end;
+
+procedure SetupOrthoAgent;
+// Post-install step for the ortho cache agent: stop any prior copy,
+// write this machine's local ortho_agent.json from the values the
+// mount pages already collected, and generate the console wrapper the
+// Run key launches at logon. Everything else about the agent's config
+// (rings, lookahead, bandwidth, zoom...) is managed from SimPit
+// Control's Ortho Cache dialog via the fleet folder — the agent polls
+// it every minute and restarts its own components when needed, so the
+// installer only seeds the endpoint fields.
+var
+  Drive, Share, ShareRoot, Host, FleetDir, CacheDir, CfgDir, Json, Bat: String;
+  P: Integer;
+begin
+  StopPriorOrthoAgent;
+
+  Drive    := UpperCase(Trim(OrthoMountPage.Values[0]));
+  Host     := Trim(OrthoPage.Values[0]);
+  Share    := Trim(OrthoPage.Values[1]);      // e.g. XPlane12/Custom Scenery
+  CacheDir := Trim(OrthoMountPage.Values[3]);
+  if Length(CacheDir) <= 3 then
+    CacheDir := AddBackslash(CacheDir) + 'rclone-cache';
+  CacheDir := RemoveBackslashUnlessRoot(CacheDir);
+
+  // Fleet config folder: sibling of the scenery share's first path
+  // segment, OUTSIDE Custom Scenery so X-Plane's scan never sees it
+  // (e.g. share XPlane12/Custom Scenery -> \\host\XPlane12\simpit).
+  ShareRoot := Share;
+  P := Pos('/', ShareRoot);
+  if P > 0 then ShareRoot := Copy(ShareRoot, 1, P - 1);
+  FleetDir := '\\' + Host + '\' + ShareRoot + '\simpit';
+
+  // Local bootstrap config. The agent merges the fleet base and the
+  // per-hostname overlay on top at runtime, so only installer-known
+  // fields are seeded here; ortho_config fills defaults for the rest.
+  // master_ip stays 127.0.0.1: every machine's own X-Plane serves a
+  // live position feed (verified in flight 2026-07-19).
+  CfgDir := ExpandConstant('{userappdata}\simpit-ortho-agent');
+  ForceDirectories(CfgDir);
+  Json := '{' + #13#10;
+  Json := Json + '  "enabled": true,' + #13#10;
+  Json := Json + '  "master_ip": "127.0.0.1",' + #13#10;
+  Json := Json + '  "xp_udp_port": 49000,' + #13#10;
+  Json := Json + '  "remote_target": "randhawanas:' + Share + '",' + #13#10;
+  Json := Json + '  "mount_root": "' + Drive + ':/",' + #13#10;
+  Json := Json + '  "cache_max_gb": ' + Trim(OrthoMountPage.Values[1]) + ',' + #13#10;
+  Json := Json + '  "cache_dir": "' + JsonEscapePath(CacheDir) + '",' + #13#10;
+  Json := Json + '  "rc_addr": "127.0.0.1:5572",' + #13#10;
+  Json := Json + '  "supervise_mount": true,' + #13#10;
+  Json := Json + '  "fleet_config_dir": "' + JsonEscapePath(FleetDir) + '"' + #13#10;
+  Json := Json + '}' + #13#10;
+  SaveStringToFile(CfgDir + '\ortho_agent.json', Json, False);
+
+  // Console wrapper, same pattern as ortho_mount.bat: titled window
+  // (upgrades kill it by title), visible log, stays open on exit.
+  Bat := '@echo off' + #13#10;
+  Bat := Bat + 'rem SimPit ortho cache agent - launched at logon via HKCU Run.' + #13#10;
+  Bat := Bat + 'rem Generated by the Simpit installer; edits are overwritten on upgrade.' + #13#10;
+  Bat := Bat + 'rem Settings live in ortho_agent.json (edited from SimPit Control,' + #13#10;
+  Bat := Bat + 'rem Ortho Cache dialog); the agent re-reads them every minute.' + #13#10;
+  Bat := Bat + 'title SimPit Ortho Agent' + #13#10;
+  Bat := Bat + '"' + ExpandConstant('{app}') + '\simpit-ortho-agent.exe"' + #13#10;
+  Bat := Bat + 'echo.' + #13#10;
+  Bat := Bat + 'echo Agent exited (code %ERRORLEVEL%). Window stays open so the error is readable.' + #13#10;
+  Bat := Bat + 'pause' + #13#10;
+  SaveStringToFile(ExpandConstant('{app}\ortho_agent.bat'), Bat, False);
 end;
 
 procedure SetupOrthoMount;
@@ -1626,10 +1735,13 @@ begin
        SW_HIDE, ewWaitUntilTerminated, RC);
   Exec('taskkill.exe', '/F /IM simpit-control.exe', '',
        SW_HIDE, ewWaitUntilTerminated, RC);
+  Exec('taskkill.exe', '/F /IM simpit-ortho-agent.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
   for I := 1 to 20 do
   begin
     if (not ProcRunning('simpit-slave.exe')) and
-       (not ProcRunning('simpit-control.exe')) then
+       (not ProcRunning('simpit-control.exe')) and
+       (not ProcRunning('simpit-ortho-agent.exe')) then
       Break;
     Sleep(500);
   end;
@@ -1712,6 +1824,7 @@ begin
       if OrthoSelected then
       begin
         SetupOrthoMount;
+        SetupOrthoAgent;
         GenerateLaunchXPlaneBat;
         LinkCustomScenery;
       end;
@@ -1721,7 +1834,13 @@ begin
     if CurStep = ssDone then
     begin
       if OrthoSelected then
+      begin
         StartOrthoMountNow;
+        // Agent after the mount: it waits for the drive by itself, but
+        // starting in this order keeps the consoles' story readable.
+        ShellExec('open', ExpandConstant('{app}\ortho_agent.bat'), '', '',
+                  SW_SHOWMINIMIZED, ewNoWait, ResultCode);
+      end;
 
       Exec(ExpandConstant('{app}\simpit-slave.exe'), '', '', SW_HIDE, ewNoWait, ResultCode);
 

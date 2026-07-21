@@ -169,6 +169,61 @@ def test_config_reloads_on_offline_to_active_transition(tmp_path, monkeypatch):
     assert e.primer.touch_interval == 120.0
 
 
+def test_periodic_reload_applies_mid_session(tmp_path, monkeypatch):
+    """Control saves a tuning change while the sim is flying: the agent
+    picks it up on the next config poll, without a sim restart."""
+    e = _engine(tmp_path)
+    e.feed.set(*CENTER, gs=250.0, track=90.0)
+    assert e.tick() == eng.ACTIVE
+    changed = OrthoAgentConfig(mount_root=e._cfg.mount_root, n_rings=2,
+                               fleet_config_dir=e._cfg.fleet_config_dir,
+                               touch_interval_seconds=240.0)
+    monkeypatch.setattr(eng.ortho_config, "load_effective",
+                        lambda path, hostname=None: changed)
+    e._next_config_check = 0.0            # due now
+    e.tick()
+    assert e.primer.touch_interval == 240.0
+    assert e.state == eng.ACTIVE          # no restart for in-place fields
+
+
+def test_endpoint_change_restarts_components(tmp_path, monkeypatch):
+    """A master-IP (or other endpoint) change from Control rebuilds the
+    feed/primer/supervisor from the new config — the 'agent restart'."""
+    e = _engine(tmp_path)
+    e.feed.set(*CENTER, gs=250.0, track=90.0)
+    assert e.tick() == eng.ACTIVE
+    old_feed, old_primer = e.feed, e.primer
+
+    class FakeCls:
+        def __init__(self, *a, **k):
+            self.args = a
+            self.started = False
+        def start(self):
+            self.started = True
+        def stop(self, *a, **k): ...
+        def clear_pending(self): ...
+        def age(self):
+            return float("inf")        # fresh feed: no sample yet
+        def latest(self):
+            return None
+
+    monkeypatch.setattr(eng, "PositionFeed", FakeCls)
+    monkeypatch.setattr(eng, "Primer", FakeCls)
+    monkeypatch.setattr(eng, "MountSupervisor", FakeCls)
+    changed = OrthoAgentConfig(mount_root=e._cfg.mount_root, n_rings=2,
+                               fleet_config_dir=e._cfg.fleet_config_dir,
+                               master_ip="192.168.10.10")
+    monkeypatch.setattr(eng.ortho_config, "load_effective",
+                        lambda path, hostname=None: changed)
+    e._next_config_check = 0.0
+    e.tick()
+    assert e.feed is not old_feed and e.primer is not old_primer
+    assert e.feed.args[0] == "192.168.10.10"
+    assert e._cfg.master_ip == "192.168.10.10"
+    assert e.state == eng.SIM_OFFLINE       # fresh feed, no sample yet
+    assert not e.feed.started               # engine not started (test mode)
+
+
 def test_mount_down_skips_priming_and_retries(tmp_path):
     """Sim up but no drive: no keep-set work, supervisor asked each tick."""
     e = _engine(tmp_path)

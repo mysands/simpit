@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal to write anywhere inside the real scenery tree. Folder names
   match `set_scenery_profile.py`'s scanner, so the master's
   `scenery_packs.ini` is managed unchanged (covered by tests).
+- Installer now deploys the ortho cache agent with the Ortho Scenery
+  Cache step: installs `simpit-ortho-agent.exe`, seeds the machine's
+  local `ortho_agent.json` from the mount answers (fleet folder
+  derived as `\\<host>\<share-root>\simpit`; master stays localhost),
+  and registers a titled console wrapper under HKCU Run. Upgrades and
+  uninstall stop the agent first.
+- Ortho agent: the fleet config is now polled every ~60 s, so settings
+  saved in Control's Ortho Cache dialog apply to running agents within
+  a minute — tuning fields in place, endpoint fields via an automatic
+  internal restart (feed/primer rebuilt from the new config). The
+  dialog notes the behavior.
 
 ### Changed
 - `fleet_config_dir` no longer defaults to a site-specific UNC path:

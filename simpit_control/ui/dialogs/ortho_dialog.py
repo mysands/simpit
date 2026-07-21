@@ -100,6 +100,13 @@ class OrthoConfigDialog(tk.Toplevel):
         self._entry_row([("FLEET CONFIG FOLDER (UNC; agents read from here; "
                           "per-machine overlay: ortho_agent.<hostname>.json)",
                           self.var_fleet_dir, 1)])
+        tk.Label(self,
+                 text=("Saved settings reach running agents within ~1 min. "
+                       "Endpoint changes (master IP, mount, cache) make each "
+                       "agent restart its components automatically."),
+                 font=theme.FONT_TINY, bg=theme.BG, fg=theme.SUBTEXT,
+                 wraplength=580, justify="left",
+                 ).pack(anchor="w", padx=20, pady=(4, 0))
 
         self._heading("RCLONE MOUNT COMMAND (derived)")
         self.preview = tk.Label(self, text="", font=theme.FONT_MONO,

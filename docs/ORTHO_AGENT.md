@@ -56,11 +56,17 @@ new Control→slave protocol messages.
    `build_ortho_agent.bat`). Default config location:
    `%APPDATA%\simpit-ortho-agent\ortho_agent.json`; the log
    (`agent.log`) sits next to it.
-3. Deployment on Windows is an **at-logon Task Scheduler task in the
-   interactive session**, NOT a service — the agent only needs file
-   reads and localhost/LAN UDP, and services live in an isolated
-   session. Linux/macOS: portable code, deployment stub only in v1
-   (a systemd user unit calling `simpit-ortho-agent` works).
+3. Deployment on Windows is handled by the **Simpit installer**: the
+   optional Ortho Scenery Cache step installs `simpit-ortho-agent.exe`
+   into the app folder, seeds the machine's local `ortho_agent.json`
+   from the mount answers (master stays `127.0.0.1` — each machine's
+   own X-Plane serves the position feed), and registers
+   `ortho_agent.bat` under HKCU Run so a visible console titled
+   "SimPit Ortho Agent" starts at every logon (an interactive-session
+   autostart, NOT a service — the agent only needs file reads and
+   localhost UDP). Upgrades and uninstalls stop the agent by window
+   title/exe name first. Linux/macOS: portable code, deployment stub
+   only in v1 (a systemd user unit calling `simpit-ortho-agent` works).
 
 ## Configuration
 
@@ -79,9 +85,15 @@ script-rewritten config). Single loader:
 3. per-machine overlay `ortho_agent.<hostname>.json` (lowercase, only
    the keys present override).
 
-The fleet config is re-read on every SIM_OFFLINE→ACTIVE transition, so
-Control edits reach running agents at the next sim session. Endpoint
-fields (master IP/port, mount root) need an agent restart.
+The config is re-read every ~60 s (and on every SIM_OFFLINE→ACTIVE
+transition), so settings saved in Control's Ortho Cache dialog reach
+running agents within about a minute. Tuning fields (rings, lookahead,
+touch cadence, bandwidth, zoom label) apply in place; endpoint fields
+(master IP/port, poll rate, mount root, cache paths) make the agent
+**restart its own components** — feed and primer stop and rebuild from
+the new config, equivalent to an agent restart with no manual step.
+The primer's warm state resets in that case and the next pass
+re-primes.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

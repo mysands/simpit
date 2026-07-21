@@ -15,11 +15,15 @@ States
 * ``ACTIVE``      — the keep set changed (or the aircraft is moving):
   priming/keep-warm loop running.
 
-The fleet config is re-read on every SIM_OFFLINE→(IDLE|ACTIVE)
-transition, so Control-side edits (ring size, zoom label, touch
-cadence) reach running agents at the next sim session without a
-restart. Endpoint changes (master IP/port, mount root) still need an
-agent restart — the position feed and primer bind them at startup.
+The fleet config is re-read periodically (every ``CONFIG_POLL_SECONDS``)
+and on every SIM_OFFLINE→(IDLE|ACTIVE) transition, so edits saved in
+Control's Ortho Cache dialog reach running agents within about a
+minute. Keep-set-shaping fields apply in place; endpoint fields
+(master IP/port, poll rate, mount root) trigger an internal restart —
+the engine stops its feed and primer and rebuilds every component from
+the new config, which is the same as an agent restart without needing
+process supervision. The primer's warm map is lost in that case, so
+the next pass re-primes (cheap when the cache still holds the files).
 
 The mount gate runs inside the tick: if the drive is absent, the
 supervisor gets a chance to wait/launch (see :mod:`.mount`) and the
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 
 from simpit_common import ortho_config
@@ -52,6 +57,16 @@ ACTIVE = "ACTIVE"
 OFFLINE_AFTER_SECONDS = 10.0
 # Below this groundspeed the aircraft counts as stationary.
 IDLE_GS_MS = 2.0
+# How often the fleet config is re-read while running, so Control-side
+# edits apply without anyone touching the machine.
+CONFIG_POLL_SECONDS = 60.0
+
+# Changing any of these means feed/primer/index bindings are stale →
+# the engine rebuilds all components (internal restart).
+_REBUILD_FIELDS = ("master_ip", "xp_udp_port", "poll_hz",
+                   "mount_root", "remote_rel_root", "rc_addr",
+                   "remote_target", "supervise_mount", "cache_dir",
+                   "cache_max_gb", "cache_max_age")
 
 
 class Engine:
@@ -85,6 +100,8 @@ class Engine:
         self.scenery = scenery or SceneryIndex(root, config.active_zoom)
         self.state = SIM_OFFLINE
         self._last_keep: list[KeepAtlas] = []
+        self._started = False
+        self._next_config_check = 0.0
 
     # ── one step ─────────────────────────────────────────────────────────
     def tick(self) -> str:
@@ -93,6 +110,11 @@ class Engine:
         Never raises for expected trouble (sim silent, mount down):
         those are states to sit in, not errors.
         """
+        now = time.monotonic()
+        if now >= self._next_config_check:
+            self._next_config_check = now + CONFIG_POLL_SECONDS
+            self._reload_config()
+
         if self.feed.age() > OFFLINE_AFTER_SECONDS or not self._cfg.enabled:
             self._enter(SIM_OFFLINE)
             return self.state
@@ -128,27 +150,55 @@ class Engine:
             self.primer.clear_pending()
 
     def _reload_config(self) -> None:
-        """Fleet config re-read on the way out of SIM_OFFLINE.
+        """Re-read the effective config and apply whatever changed.
 
-        Applies the keep-set-shaping fields in place. Fields bound at
-        startup (master IP/port, mount root, cache sizing) are logged
-        but need an agent restart to take effect.
+        Keep-set-shaping fields apply in place. Endpoint fields (see
+        ``_REBUILD_FIELDS``) trigger an internal restart: every
+        component is stopped and rebuilt from the new config.
         """
-        new = ortho_config.load_effective(self._local_config_path)
+        try:
+            new = ortho_config.load_effective(self._local_config_path)
+        except Exception as exc:                       # noqa: BLE001
+            log.warning("config reload failed (kept current): %s", exc)
+            return
         if new == self._cfg:
             return
-        log.info("config changed on the fleet share — applying")
-        if (new.master_ip != self._cfg.master_ip
-                or new.xp_udp_port != self._cfg.xp_udp_port
-                or new.mount_root != self._cfg.mount_root):
-            log.warning("endpoint fields changed; restart the agent to "
-                        "apply them")
+        log.info("config changed — applying")
+        if any(getattr(new, f) != getattr(self._cfg, f)
+               for f in _REBUILD_FIELDS):
+            self._rebuild_components(new)
+            return
         if new.active_zoom != self._cfg.active_zoom:
             self.scenery.active_zoom = new.active_zoom
             self.scenery.clear()
         self.primer.set_touch_interval(new.touch_interval_seconds)
         self.primer.set_bandwidth(new.prime_mbps)
         self._cfg = new
+
+    def _rebuild_components(self, new: OrthoAgentConfig) -> None:
+        """Internal restart: rebuild feed/primer/supervisor/index.
+
+        Equivalent to restarting the agent process (Control saved an
+        endpoint change), minus the process supervision: old threads
+        stop, fresh components bind the new config, and priming state
+        starts over.
+        """
+        log.info("endpoint config changed — restarting agent components")
+        self.feed.stop()
+        self.primer.stop()
+        self._cfg = new
+        root = new.scenery_root()
+        self.feed = PositionFeed(new.master_ip, new.xp_udp_port,
+                                 new.poll_hz)
+        self.primer = Primer(root, new.touch_interval_seconds,
+                             new.prime_mbps)
+        self.supervisor = MountSupervisor(new)
+        self.scenery = SceneryIndex(root, new.active_zoom)
+        self._last_keep = []
+        self._enter(SIM_OFFLINE)      # fresh feed has no sample yet
+        if self._started:
+            self.feed.start()
+            self.primer.start()
 
     # ── run loop ─────────────────────────────────────────────────────────
     def run(self, stop: threading.Event) -> None:
@@ -162,7 +212,7 @@ class Engine:
         """
         self.feed.start()
         self.primer.start()
-        interval = 1.0 / max(0.1, self._cfg.poll_hz)
+        self._started = True
         log.info("ortho agent up: master %s:%d, scenery %s, state %s",
                  self._cfg.master_ip, self._cfg.xp_udp_port,
                  self._cfg.scenery_root(), self.state)
@@ -172,7 +222,9 @@ class Engine:
                     self.tick()
                 except Exception:                     # pragma: no cover
                     log.exception("tick crashed; continuing")
-                stop.wait(interval)
+                # Interval from the live config: poll_hz may have been
+                # changed by a reload since the last iteration.
+                stop.wait(1.0 / max(0.1, self._cfg.poll_hz))
         finally:
             self.primer.stop()
             self.feed.stop()

@@ -99,6 +99,44 @@ def _ring_atlases(lat: float, lon: float, n_rings: int,
     return keep
 
 
+def lookahead_track(track_deg: float, psi_deg: float,
+                    wp_rel_bearing_deg: float, wp_distance_nm: float,
+                    max_divergence_deg: float = 90.0) -> float:
+    """Direction to project the lookahead ring along.
+
+    Tier-1 flight-plan awareness: with an active GPS waypoint the
+    aircraft is headed for THAT bearing (autopilot leg / direct-to),
+    and it snaps to the next course the instant the waypoint sequences,
+    while the flown ground track swings there over several seconds —
+    so aiming at the waypoint primes the turn earlier. The bearing is
+    the GPS needle's nose-relative angle plus TRUE heading, keeping
+    magnetic variation out of the math entirely.
+
+    Falls back to the ground track when no waypoint is active (the GPS
+    refs read ~0 distance) or when the waypoint lies more than
+    ``max_divergence_deg`` off the current track (just-sequenced
+    overshoot, hold entries): projecting behind the aircraft would be
+    worse than dead reckoning.
+
+    Args:
+        track_deg: ground track (hpath), degrees true.
+        psi_deg: true heading, degrees.
+        wp_rel_bearing_deg: GPS waypoint bearing relative to the nose.
+        wp_distance_nm: distance to the active waypoint, nm (0 = none).
+        max_divergence_deg: reject waypoints further off-track than this.
+
+    Returns:
+        Projection direction in degrees true.
+    """
+    if wp_distance_nm <= 0.05:
+        return track_deg
+    wp_true = (psi_deg + wp_rel_bearing_deg) % 360.0
+    diff = (wp_true - track_deg + 180.0) % 360.0 - 180.0
+    if abs(diff) > max_divergence_deg:
+        return track_deg
+    return wp_true
+
+
 def _distance_m(lat: float, lon: float, atlas: KeepAtlas) -> float:
     """Flat-earth distance from a position to an atlas's center, meters."""
     alat, alon = tilemath.tile_to_latlon(atlas.x16 + tilemath.ATLAS_GRID / 2,

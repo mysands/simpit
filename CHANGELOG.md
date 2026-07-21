@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a minute — tuning fields in place, endpoint fields via an automatic
   internal restart (feed/primer rebuilt from the new config). The
   dialog notes the behavior.
+- Ortho agent: tier-1 flight-plan awareness (`waypoint_lookahead`,
+  default on, dialog checkbox). The lookahead ring aims at the active
+  GPS waypoint — bearing derived from the nose-relative GPS needle
+  plus true heading, so magnetic variation stays out of the math —
+  and swings onto the next leg the moment a waypoint sequences,
+  seconds before the flown track gets there. Falls back to the ground
+  track with no active waypoint (GPS refs read 0) or when the waypoint
+  is >90° off-track (just-sequenced overshoot, holds). The live
+  lookahead check projects the same way.
 
 ### Changed
 - `fleet_config_dir` no longer defaults to a site-specific UNC path:

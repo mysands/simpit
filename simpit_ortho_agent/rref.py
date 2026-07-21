@@ -4,16 +4,25 @@ simpit_ortho_agent.rref
 Continuous position feed from the X-Plane master over RREF UDP.
 
 The master serves RREF to any number of subscribers, so every machine's
-agent subscribes independently — same feed, zero coordination. Four
+agent subscribes independently — same feed, zero coordination. Seven
 datarefs are streamed at the configured rate:
 
     sim/flightmodel/position/latitude
     sim/flightmodel/position/longitude
-    sim/flightmodel/position/groundspeed   (m/s)
-    sim/flightmodel/position/hpath         (ground track, deg true)
+    sim/flightmodel/position/groundspeed                  (m/s)
+    sim/flightmodel/position/hpath                        (track, deg true)
+    sim/flightmodel/position/psi                          (heading, deg true)
+    sim/cockpit2/radios/indicators/gps_relative_bearing_deg
+    sim/cockpit2/radios/indicators/gps_dme_distance_nm
 
-``hpath`` and not ``psi``: heading diverges from track in crosswind,
-which would skew the 45 s lookahead projection by up to an atlas width.
+``hpath`` and not ``psi`` for the movement direction: heading diverges
+from track in crosswind, which would skew the 45 s lookahead by up to
+an atlas width. ``psi`` IS streamed, but only to convert the GPS
+needle's nose-relative waypoint bearing into a true bearing (tier-1
+flight-plan awareness — see :func:`..keepset.lookahead_track`); the
+nose-relative + true-heading pair keeps magnetic variation out of the
+math entirely. The GPS refs read 0 when no waypoint is active, which
+the keep-set logic treats as "fall back to the ground track".
 
 RREF subscriptions silently expire (sim restart, scenery reload), so
 the feed re-sends its subscriptions every ``RESUBSCRIBE_SECONDS``. The
@@ -36,6 +45,9 @@ POSITION_DATAREFS = {
     2: "sim/flightmodel/position/longitude",
     3: "sim/flightmodel/position/groundspeed",
     4: "sim/flightmodel/position/hpath",
+    5: "sim/flightmodel/position/psi",
+    6: "sim/cockpit2/radios/indicators/gps_relative_bearing_deg",
+    7: "sim/cockpit2/radios/indicators/gps_dme_distance_nm",
 }
 
 # Subscriptions expire on the sim side; re-assert them at this cadence.
@@ -52,12 +64,20 @@ class PositionSample:
         gs: groundspeed in m/s.
         track: ground track (hpath), degrees true.
         monotonic: time.monotonic() when the sample became complete.
+        psi: true heading in degrees (waypoint-bearing conversion only).
+        wp_rel_bearing: GPS active-waypoint bearing relative to the
+            nose, degrees; 0 when no waypoint is active.
+        wp_distance_nm: distance to the GPS active waypoint in nm; 0
+            when no waypoint is active.
     """
     lat: float
     lon: float
     gs: float
     track: float
     monotonic: float
+    psi: float = 0.0
+    wp_rel_bearing: float = 0.0
+    wp_distance_nm: float = 0.0
 
 
 class PositionFeed:
@@ -143,7 +163,9 @@ class PositionFeed:
                 if all(idx in values for idx in POSITION_DATAREFS):
                     sample = PositionSample(
                         lat=values[1], lon=values[2], gs=values[3],
-                        track=values[4], monotonic=time.monotonic())
+                        track=values[4], monotonic=time.monotonic(),
+                        psi=values[5], wp_rel_bearing=values[6],
+                        wp_distance_nm=values[7])
                     with self._lock:
                         self._latest = sample
             self._send_subscriptions(sock, 0)

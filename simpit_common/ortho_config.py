@@ -62,6 +62,10 @@ class OrthoAgentConfig:
     # own scenery reads on the same cache drive — measured as micro-
     # stutters every ~15 s in flight, 2026-07-19.
     prime_mbps:             float = 24.0
+    # Aim the lookahead ring at the active GPS waypoint when one exists
+    # (tier-1 flight-plan awareness); the ground track remains the
+    # automatic fallback. Off = always dead-reckon along hpath.
+    waypoint_lookahead:     bool  = True
     heading_offset_deg:     float = 0.0
     # Fleet distribution: the folder (UNC or local) holding the
     # authoritative copy every machine reads. Site-specific, so there

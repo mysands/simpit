@@ -55,7 +55,8 @@ class FakeXPlane:
 
 @pytest.fixture()
 def sim():
-    fake = FakeXPlane({1: 42.898, 2: -72.271, 3: 65.0, 4: 92.5})
+    fake = FakeXPlane({1: 42.898, 2: -72.271, 3: 65.0, 4: 92.5,
+                       5: 88.0, 6: 12.5, 7: 34.0})
     yield fake
     fake.close()
 
@@ -80,6 +81,9 @@ def test_feed_assembles_full_samples(sim):
                                             pytest.approx(-72.271))
         assert sample.gs == pytest.approx(65.0)
         assert sample.track == pytest.approx(92.5)
+        assert sample.psi == pytest.approx(88.0)
+        assert sample.wp_rel_bearing == pytest.approx(12.5)
+        assert sample.wp_distance_nm == pytest.approx(34.0)
         assert feed.age() < 3.0
     finally:
         feed.stop()

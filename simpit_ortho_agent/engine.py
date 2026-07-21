@@ -42,7 +42,7 @@ from simpit_common import ortho_config
 from simpit_common.ortho_config import OrthoAgentConfig
 
 from .atlas_index import SceneryIndex
-from .keepset import KeepAtlas, compute_keep_set
+from .keepset import KeepAtlas, compute_keep_set, lookahead_track
 from .mount import MountSupervisor, mount_up
 from .primer import Primer
 from .rref import PositionFeed
@@ -128,7 +128,12 @@ class Engine:
                 return self.state
 
         sample = self.feed.latest()
-        keep = compute_keep_set(sample.lat, sample.lon, sample.track,
+        track = sample.track
+        if self._cfg.waypoint_lookahead:
+            track = lookahead_track(sample.track, sample.psi,
+                                    sample.wp_rel_bearing,
+                                    sample.wp_distance_nm)
+        keep = compute_keep_set(sample.lat, sample.lon, track,
                                 sample.gs, self._cfg.n_rings,
                                 self._cfg.lookahead_seconds, self.scenery)
         changed = keep != self._last_keep

@@ -57,6 +57,9 @@ POSITION_DATAREFS = {
     2: "sim/flightmodel/position/longitude",
     3: "sim/flightmodel/position/groundspeed",
     4: "sim/flightmodel/position/hpath",
+    5: "sim/flightmodel/position/psi",
+    6: "sim/cockpit2/radios/indicators/gps_relative_bearing_deg",
+    7: "sim/cockpit2/radios/indicators/gps_dme_distance_nm",
 }
 
 
@@ -206,7 +209,8 @@ def rref_snapshot(host: str, port: int, timeout: float = 5.0) -> dict[str, float
         finally:
             for idx, ref in POSITION_DATAREFS.items():
                 s.sendto(pkt(0, idx, ref), (host, port))
-    return {"lat": got[1], "lon": got[2], "gs": got[3], "track": got[4]}
+    return {"lat": got[1], "lon": got[2], "gs": got[3], "track": got[4],
+            "psi": got[5], "wp_rel": got[6], "wp_dist": got[7]}
 
 
 def agent_running() -> bool:
@@ -239,9 +243,24 @@ def agent_running() -> bool:
 try:
     from simpit_common.tilemath import dsf_folder_name, latlon_to_tile, project_position
     from simpit_ortho_agent.atlas_index import load_atlas_index, resolve_atlas
+    from simpit_ortho_agent.keepset import lookahead_track
     USING_PRODUCTION_CODE = True
 except ImportError:
     USING_PRODUCTION_CODE = False
+
+    def lookahead_track(track_deg: float, psi_deg: float,
+                        wp_rel_bearing_deg: float, wp_distance_nm: float,
+                        max_divergence_deg: float = 90.0) -> float:
+        """Projection direction: active GPS waypoint bearing (true =
+        nose-relative needle + true heading) when one exists and lies
+        within max_divergence of the track; else the ground track."""
+        if wp_distance_nm <= 0.05:
+            return track_deg
+        wp_true = (psi_deg + wp_rel_bearing_deg) % 360.0
+        diff = (wp_true - track_deg + 180.0) % 360.0 - 180.0
+        if abs(diff) > max_divergence_deg:
+            return track_deg
+        return wp_true
 
     def latlon_to_tile(lat: float, lon: float, zoom: int) -> tuple[int, int]:
         """Convert lat/lon to slippy tile x, y at a zoom level.
@@ -642,6 +661,10 @@ def check_agent_lookahead(cfg: dict, pos: dict[str, float] | None) -> CheckResul
     if pos["gs"] < 2.0:
         return CheckResult("agent-lookahead", SKIP,
                            "aircraft stationary - lookahead equals current")
-    lat, lon = project_position(pos["lat"], pos["lon"], pos["track"],
+    # Same projection the agent makes: toward the active GPS waypoint
+    # when one exists, else along the ground track.
+    track = lookahead_track(pos["track"], pos.get("psi", 0.0),
+                            pos.get("wp_rel", 0.0), pos.get("wp_dist", 0.0))
+    lat, lon = project_position(pos["lat"], pos["lon"], track,
                                 pos["gs"], float(cfg["lookahead_seconds"]))
     return _check_position_primed("agent-lookahead", lat, lon, cfg)

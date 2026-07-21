@@ -29,8 +29,9 @@ class FakeFeed:
         self.sample: PositionSample | None = None
         self.age_s = float("inf")
 
-    def set(self, lat, lon, gs, track):
-        self.sample = PositionSample(lat, lon, gs, track, time.monotonic())
+    def set(self, lat, lon, gs, track, **wp):
+        self.sample = PositionSample(lat, lon, gs, track, time.monotonic(),
+                                     **wp)
         self.age_s = 0.0
 
     def latest(self):
@@ -222,6 +223,34 @@ def test_endpoint_change_restarts_components(tmp_path, monkeypatch):
     assert e._cfg.master_ip == "192.168.10.10"
     assert e.state == eng.SIM_OFFLINE       # fresh feed, no sample yet
     assert not e.feed.started               # engine not started (test mode)
+
+
+def test_waypoint_aims_the_lookahead(tmp_path):
+    """Track east but active GPS waypoint north: the keep set follows
+    the waypoint bearing (tier-1 flight-plan awareness)."""
+    e = _engine(tmp_path)
+    # Northbound waypoint 25 nm out, nose = track (no wind).
+    e.feed.set(*CENTER, gs=250.0, track=90.0,
+               psi=90.0, wp_rel_bearing=-90.0, wp_distance_nm=25.0)
+    e.tick()
+    north = {p for p in e.primer.schedules[-1]}
+    e2 = _engine(tmp_path)
+    e2.feed.set(*CENTER, gs=250.0, track=90.0)      # no waypoint
+    e2.tick()
+    east = {p for p in e2.primer.schedules[-1]}
+    assert north != east                             # ring aimed differently
+
+
+def test_waypoint_lookahead_can_be_disabled(tmp_path):
+    e = _engine(tmp_path, waypoint_lookahead=False)
+    e.feed.set(*CENTER, gs=250.0, track=90.0,
+               psi=90.0, wp_rel_bearing=-90.0, wp_distance_nm=25.0)
+    e.tick()
+    with_wp_off = {p for p in e.primer.schedules[-1]}
+    e2 = _engine(tmp_path)
+    e2.feed.set(*CENTER, gs=250.0, track=90.0)
+    e2.tick()
+    assert with_wp_off == {p for p in e2.primer.schedules[-1]}
 
 
 def test_mount_down_skips_priming_and_retries(tmp_path):

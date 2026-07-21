@@ -14,7 +14,7 @@ import math
 
 from simpit_common import tilemath as tm
 from simpit_ortho_agent.atlas_index import SceneryIndex
-from simpit_ortho_agent.keepset import compute_keep_set
+from simpit_ortho_agent.keepset import compute_keep_set, lookahead_track
 from tests.ortho_agent.conftest import grid_names, make_folder
 
 FOLDER = "zOrtho4XP_Z18_+42-073"
@@ -132,6 +132,27 @@ def test_open_water_center_contributes_nothing(tmp_path):
     scenery = SceneryIndex(tmp_path, active_zoom=18)
     assert compute_keep_set(0.0, 0.0, 90.0, 250.0, N_RINGS, LOOKAHEAD,
                             scenery) == []
+
+
+def test_lookahead_track_prefers_active_waypoint():
+    """With a GPS waypoint, project toward its TRUE bearing — derived
+    from the nose-relative needle plus true heading, so a crosswind
+    crab (psi != track) still lands on the right direction."""
+    # Crab: heading 080, track 090; waypoint 15° right of the NOSE.
+    assert lookahead_track(90.0, 80.0, 15.0, 25.0) == 95.0
+    # Wraparound: heading 350 + relative 20 -> 010 true.
+    assert lookahead_track(5.0, 350.0, 20.0, 25.0) == 10.0
+
+
+def test_lookahead_track_falls_back_without_waypoint():
+    assert lookahead_track(90.0, 80.0, 15.0, 0.0) == 90.0     # no waypoint
+
+
+def test_lookahead_track_rejects_waypoint_behind():
+    """A just-sequenced waypoint (now behind) must not aim the ring
+    backwards — dead reckoning wins until the GPS shows the next leg."""
+    assert lookahead_track(90.0, 90.0, 170.0, 1.0) == 90.0    # 100° off
+    assert lookahead_track(90.0, 90.0, 80.0, 1.0) == 170.0    # 80° off: ok
 
 
 def test_rel_path_shape(tmp_path):

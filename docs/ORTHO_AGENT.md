@@ -10,10 +10,15 @@ it. It runs on **every** X-Plane machine (master, CENTERLEFT, RIGHT):
 * It subscribes to the X-Plane master's position over RREF UDP
   (lat/lon/groundspeed/**ground track** — `hpath`, not heading, so a
   crosswind crab can't skew the prefetch direction).
-* Around the current position *and* a 45-second along-track projection
-  it computes a **keep set**: rings of atlases (default 4 rings → a
-  9×9 block) on the atlas grid at each scenery folder's base zoom,
-  including any higher-zoom airport patches inside the ring.
+* Around the current position *and* a 45-second projection it computes
+  a **keep set**: rings of atlases (default 4 rings → a 9×9 block) on
+  the atlas grid at each scenery folder's base zoom, including any
+  higher-zoom airport patches inside the ring. The projection aims at
+  the **active GPS waypoint** when one exists (bearing = nose-relative
+  GPS needle + true heading, so magnetic variation never enters; the
+  ring swings onto the next leg the instant a waypoint sequences) and
+  falls back to the ground track when there is no waypoint or it lies
+  more than 90° off-track.
 * A single worker thread **primes** each keep-set atlas (sequential
   8 MB reads to EOF — with `--vfs-cache-mode full` a read IS a cache
   fill) and then **re-touches** it every `touch_interval_seconds` so
@@ -111,6 +116,7 @@ re-primes.
 | `poll_hz` | `1` | position sample rate / engine tick |
 | `touch_interval_seconds` | `60` | keep-warm re-touch cadence |
 | `prime_mbps` | `24` | primer read-bandwidth cap, MB/s (0 = off). Keep it modest: unthrottled bursts starve X-Plane's reads on the shared cache drive → micro-stutters (measured in flight 2026-07-19); staying ahead only needs ~5–8 MB/s |
+| `waypoint_lookahead` | `true` | aim the lookahead at the active GPS waypoint (tier-1 flight-plan awareness); off = always dead-reckon along the ground track |
 | `heading_offset_deg` | `0` | reserved (v2 side-view bias — defined, not applied) |
 | `fleet_config_dir` | `""` | folder of the authoritative fleet copy + overlays; empty = local-only |
 

@@ -38,9 +38,19 @@ class TestScriptDef:
             assert defn.state_probe is not None
             assert defn.state_probe["type"] == "folder_exists"
 
-    def test_all_cascade(self):
+    # Scripts that intentionally do NOT cascade: they act on shared state
+    # (the NAS scenery root), so running them on every slave would be
+    # redundant. See the cascade=False comments in registry.py.
+    NON_CASCADE = frozenset({"set_scenery_profile"})
+
+    def test_cascade_flags(self):
         for defn in sp_registry.REGISTRY:
-            assert defn.cascade, f"{defn.script_name} should be cascade=True"
+            if defn.script_name in self.NON_CASCADE:
+                assert not defn.cascade, (
+                    f"{defn.script_name} acts on shared state and "
+                    "should be cascade=False")
+            else:
+                assert defn.cascade, f"{defn.script_name} should be cascade=True"
 
     def test_bat_content_not_empty_for_standard_scripts(self):
         for name in ("enable_custom_scenery", "disable_custom_scenery"):

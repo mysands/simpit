@@ -383,6 +383,64 @@ begin
     BackupPage.Values[0] := Folder;
 end;
 
+function JsonStr(const Json, Key: String): String;
+// Minimal extractor for the flat "key": "value" pairs this installer's
+// own EscapeJson writes (only \\ and \" are escaped). Empty when the
+// key is absent. Not a general JSON parser - do not point it at
+// arbitrary files.
+var
+  P, E: Integer;
+begin
+  Result := '';
+  P := Pos('"' + Key + '": "', Json);
+  if P = 0 then Exit;
+  // Skip the matched '"key": "' literal: 1 quote + key + '": ' + 1
+  // quote = Length(Key) + 5 (a +6 here once ate the first character
+  // of every value - 'C:\X-Plane 12.1' became ':\X-Plane 12.1').
+  P := P + Length(Key) + 5;
+  E := P;
+  while E <= Length(Json) do
+  begin
+    if Json[E] = '\' then
+    begin
+      Result := Result + Json[E + 1];
+      E := E + 2;
+    end
+    else if Json[E] = '"' then
+      Break
+    else
+    begin
+      Result := Result + Json[E];
+      E := E + 1;
+    end;
+  end;
+end;
+
+procedure PrefillFromPriorInstall;
+// A re-run should never ask for what a previous install already knows:
+// the security key comes back from simpit.key, and identity / X-Plane /
+// backup settings from slave-config.json. Every field stays editable -
+// these are defaults, not locks.
+var
+  Cfg: AnsiString;
+  Json, S: String;
+begin
+  if LoadStringFromFile(KeyFilePath, Cfg) then
+    if Trim(String(Cfg)) <> '' then
+      KeyPage.Values[0] := Trim(String(Cfg));
+
+  if not LoadStringFromFile(
+      ExpandConstant('{userappdata}\simpit-slave\slave-config.json'), Cfg) then
+    Exit;
+  Json := String(Cfg);
+  S := JsonStr(Json, 'name');          if S <> '' then IdentityPage.Values[0] := S;
+  S := JsonStr(Json, 'control_host');  if S <> '' then IdentityPage.Values[1] := S;
+  S := JsonStr(Json, 'XPLANE_FOLDER'); if S <> '' then XPlanePage.Values[0]  := S;
+  S := JsonStr(Json, 'XPLANE_EXE');    if S <> '' then XPlanePage.Values[1]  := S;
+  S := JsonStr(Json, 'BACKUP_FOLDER'); if S <> '' then BackupPage.Values[0]  := S;
+  S := JsonStr(Json, 'BACKUP_KEEP');   if S <> '' then BackupPage.Values[1]  := S;
+end;
+
 procedure InitializeWizard;
 var
   BrowseBtn: TButton;
@@ -460,6 +518,11 @@ begin
   BrowseBtn.Top  := BackupPage.Edits[0].Top +
                     (BackupPage.Edits[0].Height - BrowseBtn.Height) div 2;
   BrowseBtn.OnClick := @BrowseForBackupFolder;
+
+  // Re-runs default every page to what the previous install chose, so a
+  // reinstall or upgrade never has to re-enter the key, Control IP,
+  // X-Plane folder or backup settings by hand.
+  PrefillFromPriorInstall;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -534,6 +597,25 @@ begin
       Result := False;
     end;
   end;
+
+  // Validate the X-Plane folder: blank is allowed (no X-Plane on this
+  // machine), but a non-blank folder must actually exist - a typo or a
+  // stale prefill would otherwise flow silently into slave-config.json
+  // and every script that reads XPLANE_FOLDER.
+  if CurPageID = XPlanePage.ID then
+  begin
+    if (Trim(XPlanePage.Values[0]) <> '') and
+       (not DirExists(Trim(XPlanePage.Values[0]))) then
+    begin
+      MsgBox(
+        'The X-Plane folder does not exist:' + #13#10 +
+        '  ' + Trim(XPlanePage.Values[0]) + #13#10 + #13#10 +
+        'Fix the path (or leave it blank if X-Plane is not installed ' +
+        'on this machine).',
+        mbError, MB_OK);
+      Result := False;
+    end;
+  end;
 end;
 
 procedure AddSlaveFirewallRules;
@@ -581,6 +663,40 @@ begin
       'Follow the on-screen instructions to allow Simpit Slave.',
       mbError, MB_OK);
     ShowFirewallAllowApp;
+  end;
+end;
+
+function ProcRunning(const ExeName: String): Boolean;
+// tasklist always exits 0, so grep its output with find: RC 0 = the
+// process name appeared, RC 1 = it did not.
+var
+  RC: Integer;
+begin
+  Result := Exec('cmd.exe',
+    '/c tasklist /FI "IMAGENAME eq ' + ExeName + '" | find /I "' + ExeName + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, RC) and (RC = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+// Stop the running Simpit apps BEFORE the [Files] copy - overwriting a
+// locked exe is what previously forced killing the slave by hand on
+// every upgrade. taskkill /F returns before the process has actually
+// exited, so poll until it is really gone (10 s cap; the copy then
+// fails with Inno's normal retry dialog rather than silently).
+var
+  RC, I: Integer;
+begin
+  Result := '';
+  Exec('taskkill.exe', '/F /IM simpit-slave.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
+  Exec('taskkill.exe', '/F /IM simpit-control.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, RC);
+  for I := 1 to 20 do
+  begin
+    if (not ProcRunning('simpit-slave.exe')) and
+       (not ProcRunning('simpit-control.exe')) then
+      Break;
+    Sleep(500);
   end;
 end;
 
